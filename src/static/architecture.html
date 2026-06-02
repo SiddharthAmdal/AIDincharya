@@ -1,0 +1,441 @@
+<!DOCTYPE html>
+
+<html class="light" lang="en"><head>
+<meta charset="utf-8"/>
+<meta content="width=device-width, initial-scale=1.0" name="viewport"/>
+<title>AI Architecture - Dinacharya AI</title>
+<script src="https://cdn.tailwindcss.com?plugins=forms,container-queries"></script>
+<link href="https://fonts.googleapis.com/css2?family=Playfair+Display:wght@600;700&amp;family=Inter:wght@400;500;600&amp;display=swap" rel="stylesheet"/>
+<link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&amp;display=swap" rel="stylesheet"/>
+<link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&amp;display=swap" rel="stylesheet"/>
+<script id="tailwind-config">
+      tailwind.config = {
+        darkMode: "class",
+        theme: {
+          extend: {
+            "colors": {
+                    "on-tertiary-fixed-variant": "#5a430f",
+                    "surface-container-highest": "#e5e2e1",
+                    "outline-variant": "#c1c8c1",
+                    "on-tertiary": "#ffffff",
+                    "inverse-primary": "#a5d1b5",
+                    "surface-container-low": "#f6f3f2",
+                    "secondary-fixed-dim": "#b9cda4",
+                    "surface-container-high": "#eae7e7",
+                    "primary-fixed-dim": "#a5d1b5",
+                    "surface-variant": "#e5e2e1",
+                    "on-error": "#ffffff",
+                    "tertiary": "#3c2a00",
+                    "on-primary-container": "#8fba9f",
+                    "primary": "#093421",
+                    "on-secondary": "#ffffff",
+                    "primary-container": "#234b36",
+                    "on-primary-fixed": "#002112",
+                    "on-tertiary-fixed": "#261a00",
+                    "on-secondary-fixed-variant": "#3b4c2c",
+                    "on-secondary-fixed": "#111f05",
+                    "inverse-surface": "#303030",
+                    "on-primary": "#ffffff",
+                    "primary-fixed": "#c0edd0",
+                    "surface": "#fcf9f8",
+                    "tertiary-fixed-dim": "#e3c282",
+                    "on-background": "#1b1c1c",
+                    "outline": "#717973",
+                    "on-tertiary-container": "#ccac6e",
+                    "on-surface-variant": "#414943",
+                    "secondary-container": "#d2e6bc",
+                    "on-error-container": "#93000a",
+                    "surface-container": "#f0eded",
+                    "on-secondary-container": "#576846",
+                    "tertiary-fixed": "#ffdea0",
+                    "surface-container-lowest": "#ffffff",
+                    "surface-tint": "#3e6750",
+                    "tertiary-container": "#56400b",
+                    "surface-bright": "#fcf9f8",
+                    "background": "#fcf9f8",
+                    "inverse-on-surface": "#f3f0ef",
+                    "error-container": "#ffdad6",
+                    "secondary": "#526442",
+                    "error": "#ba1a1a",
+                    "surface-dim": "#dcd9d9",
+                    "on-surface": "#1b1c1c",
+                    "secondary-fixed": "#d5e9bf",
+                    "on-primary-fixed-variant": "#274e39"
+            },
+            "borderRadius": {
+                    "DEFAULT": "0.25rem",
+                    "lg": "0.5rem",
+                    "xl": "0.75rem",
+                    "full": "9999px"
+            },
+            "spacing": {
+                    "margin-mobile": "20px",
+                    "container-max": "1280px",
+                    "margin-desktop": "64px",
+                    "base": "8px",
+                    "gutter": "24px"
+            },
+            "fontFamily": {
+                    "headline-lg": [
+                            "Playfair Display"
+                    ],
+                    "display-lg": [
+                            "Playfair Display"
+                    ],
+                    "body-lg": [
+                            "Inter"
+                    ],
+                    "body-md": [
+                            "Inter"
+                    ],
+                    "headline-md": [
+                            "Playfair Display"
+                    ],
+                    "label-sm": [
+                            "Inter"
+                    ],
+                    "body-sm": [
+                            "Inter"
+                    ],
+                    "label-md": [
+                            "Inter"
+                    ],
+                    "display-lg-mobile": [
+                            "Playfair Display"
+                    ]
+            },
+            "fontSize": {
+                    "headline-lg": [
+                            "32px",
+                            {
+                                    "lineHeight": "1.2",
+                                    "fontWeight": "600"
+                            }
+                    ],
+                    "display-lg": [
+                            "48px",
+                            {
+                                    "lineHeight": "1.1",
+                                    "letterSpacing": "-0.02em",
+                                    "fontWeight": "700"
+                            }
+                    ],
+                    "body-lg": [
+                            "18px",
+                            {
+                                    "lineHeight": "1.6",
+                                    "fontWeight": "400"
+                            }
+                    ],
+                    "body-md": [
+                            "16px",
+                            {
+                                    "lineHeight": "1.5",
+                                    "fontWeight": "400"
+                            }
+                    ],
+                    "headline-md": [
+                            "24px",
+                            {
+                                    "lineHeight": "1.3",
+                                    "fontWeight": "600"
+                            }
+                    ],
+                    "label-sm": [
+                            "12px",
+                            {
+                                    "lineHeight": "1",
+                                    "fontWeight": "500"
+                            }
+                    ],
+                    "body-sm": [
+                            "14px",
+                            {
+                                    "lineHeight": "1.4",
+                                    "fontWeight": "400"
+                            }
+                    ],
+                    "label-md": [
+                            "14px",
+                            {
+                                    "lineHeight": "1",
+                                    "letterSpacing": "0.05em",
+                                    "fontWeight": "600"
+                            }
+                    ],
+                    "display-lg-mobile": [
+                            "36px",
+                            {
+                                    "lineHeight": "1.2",
+                                    "fontWeight": "700"
+                            }
+                    ]
+            }
+          },
+        },
+      }
+    </script>
+<style>
+        .glass-panel {
+            background: rgba(255, 255, 255, 0.7);
+            backdrop-filter: blur(12px);
+            -webkit-backdrop-filter: blur(12px);
+            box-shadow: 0 4px 40px -4px rgba(0, 0, 0, 0.04);
+            border: 1px solid rgba(255, 255, 255, 0.5);
+        }
+        .connection-line {
+            position: absolute;
+            z-index: 0;
+            stroke: #222222;
+            stroke-opacity: 0.2;
+            stroke-width: 1px;
+            fill: none;
+        }
+        .node-container {
+            position: relative;
+            z-index: 10;
+        }
+        .pulse-glow {
+            animation: pulse-glow 3s infinite;
+        }
+        @keyframes pulse-glow {
+            0% { box-shadow: 0 0 0 0 rgba(165, 209, 181, 0.4); }
+            70% { box-shadow: 0 0 0 10px rgba(165, 209, 181, 0); }
+            100% { box-shadow: 0 0 0 0 rgba(165, 209, 181, 0); }
+        }
+    </style>
+</head>
+<body class="bg-background text-on-background min-h-screen selection:bg-primary-fixed selection:text-on-primary-fixed">
+<!-- SideNavBar (Suppressed based on intent: 'Insights' active as fallback for Architecture) -->
+<nav class="hidden md:flex flex-col fixed left-0 top-0 h-screen w-64 bg-surface shadow-[40px_0_40px_-40px_rgba(0,0,0,0.04)] py-8 px-4 z-40 border-r border-outline-variant/20">
+<div class="mb-12 px-4">
+<h1 class="font-headline-sm text-headline-sm font-bold text-primary">Wellness Portal</h1>
+<p class="font-body-sm text-body-sm text-on-surface-variant mt-1">Vata-Pitta Balance</p>
+</div>
+<div class="flex-1 space-y-2">
+<a class="flex items-center gap-3 text-on-surface-variant px-4 py-3 hover:bg-surface-container-high transition-all hover:translate-x-1 duration-300 rounded-xl" href="#">
+<span class="material-symbols-outlined" style="font-variation-settings: 'FILL' 0;">dashboard</span>
+<span class="font-label-md text-label-md">Dashboard</span>
+</a>
+<a class="flex items-center gap-3 text-on-surface-variant px-4 py-3 hover:bg-surface-container-high transition-all hover:translate-x-1 duration-300 rounded-xl" href="#">
+<span class="material-symbols-outlined" style="font-variation-settings: 'FILL' 0;">event_note</span>
+<span class="font-label-md text-label-md">Routine</span>
+</a>
+<a class="flex items-center gap-3 bg-secondary-container text-on-secondary-container rounded-xl px-4 py-3 font-bold hover:bg-surface-container-high transition-all hover:translate-x-1 duration-300" href="#">
+<span class="material-symbols-outlined" style="font-variation-settings: 'FILL' 1;">psychology</span>
+<span class="font-label-md text-label-md">Insights</span>
+</a>
+<a class="flex items-center gap-3 text-on-surface-variant px-4 py-3 hover:bg-surface-container-high transition-all hover:translate-x-1 duration-300 rounded-xl" href="#">
+<span class="material-symbols-outlined" style="font-variation-settings: 'FILL' 0;">account_circle</span>
+<span class="font-label-md text-label-md">Profile</span>
+</a>
+</div>
+<div class="mt-auto px-4">
+<div class="glass-panel p-4 rounded-xl flex items-center justify-between border border-primary-fixed/50">
+<div class="flex items-center gap-3">
+<div class="w-2 h-2 rounded-full bg-primary pulse-glow"></div>
+<span class="font-label-sm text-label-sm font-medium">AI Sync Active</span>
+</div>
+</div>
+</div>
+</nav>
+<!-- Main Content Canvas -->
+<main class="flex-1 md:ml-64 flex flex-col min-h-screen overflow-x-hidden">
+<div class="flex-1 w-full max-w-container-max mx-auto px-margin-mobile md:px-margin-desktop py-12 md:py-24">
+<!-- Header Section -->
+<header class="mb-16 md:mb-24 max-w-3xl">
+<div class="inline-flex items-center gap-2 px-3 py-1.5 rounded-full bg-primary-fixed/30 text-primary mb-6">
+<span class="material-symbols-outlined text-[16px]" style="font-variation-settings: 'FILL' 1;">science</span>
+<span class="font-label-sm text-label-sm tracking-wide uppercase">System Architecture</span>
+</div>
+<h2 class="font-display-lg-mobile md:font-display-lg text-primary mb-6">The Intelligence Behind Your Flow</h2>
+<p class="font-body-lg text-body-lg text-on-surface-variant">A seamless orchestration of continuous health data, ancient Ayurvedic logic, and advanced machine learning to curate your personalized daily routine.</p>
+</header>
+<!-- Architecture Diagram Container -->
+<div class="relative w-full bg-surface-container-lowest rounded-3xl p-8 md:p-16 border border-outline-variant/10 shadow-[0_4px_40px_-4px_rgba(0,0,0,0.02)] overflow-x-auto hide-scrollbar">
+<!-- SVG Connections (Desktop horizontal layout representation) -->
+<svg class="hidden lg:block absolute inset-0 w-full h-full pointer-events-none" style="min-width: 1000px;">
+<!-- Perception to Dosha -->
+<path class="connection-line" d="M 280 150 C 350 150, 350 250, 420 250"></path>
+<path class="connection-line" d="M 280 350 C 350 350, 350 250, 420 250"></path>
+<!-- Dosha to Knowledge -->
+<path class="connection-line" d="M 680 250 L 760 250"></path>
+<!-- Knowledge to Output -->
+<path class="connection-line" d="M 1020 250 L 1100 250"></path>
+</svg>
+<div class="flex flex-col lg:flex-row gap-12 lg:gap-8 justify-between relative z-10 min-w-[300px] lg:min-w-[1000px]">
+<!-- Layer 1: Perception -->
+<div class="flex-1 space-y-6 node-container">
+<div class="flex items-center gap-3 mb-8">
+<div class="w-8 h-8 rounded-full bg-surface-container flex items-center justify-center text-outline">01</div>
+<h3 class="font-headline-md text-headline-md text-primary">Perception Layer</h3>
+</div>
+<div class="space-y-4">
+<div class="glass-panel p-5 rounded-2xl flex items-center gap-4 hover:shadow-md transition-shadow group">
+<div class="w-10 h-10 rounded-full bg-primary-fixed/20 flex items-center justify-center text-primary group-hover:bg-primary group-hover:text-white transition-colors">
+<span class="material-symbols-outlined text-[20px]" style="font-variation-settings: 'FILL' 0;">watch</span>
+</div>
+<div>
+<h4 class="font-label-md text-label-md mb-1">Wearable API</h4>
+<p class="font-body-sm text-body-sm text-on-surface-variant">Continuous HRV, sleep, &amp; activity streams.</p>
+</div>
+</div>
+<div class="glass-panel p-5 rounded-2xl flex items-center gap-4 hover:shadow-md transition-shadow group">
+<div class="w-10 h-10 rounded-full bg-primary-fixed/20 flex items-center justify-center text-primary group-hover:bg-primary group-hover:text-white transition-colors">
+<span class="material-symbols-outlined text-[20px]" style="font-variation-settings: 'FILL' 0;">monitor_heart</span>
+</div>
+<div>
+<h4 class="font-label-md text-label-md mb-1">Symptom Tracking</h4>
+<p class="font-body-sm text-body-sm text-on-surface-variant">Self-reported physical &amp; mental states.</p>
+</div>
+</div>
+<div class="glass-panel p-5 rounded-2xl flex items-center gap-4 hover:shadow-md transition-shadow group">
+<div class="w-10 h-10 rounded-full bg-primary-fixed/20 flex items-center justify-center text-primary group-hover:bg-primary group-hover:text-white transition-colors">
+<span class="material-symbols-outlined text-[20px]" style="font-variation-settings: 'FILL' 0;">fact_check</span>
+</div>
+<div>
+<h4 class="font-label-md text-label-md mb-1">Questionnaire</h4>
+<p class="font-body-sm text-body-sm text-on-surface-variant">Periodic deep-dive assessments.</p>
+</div>
+</div>
+</div>
+</div>
+<!-- Layer 2: Dosha Engine -->
+<div class="flex-1 space-y-6 node-container flex flex-col justify-center">
+<div class="flex items-center gap-3 mb-8 lg:absolute lg:top-0">
+<div class="w-8 h-8 rounded-full bg-surface-container flex items-center justify-center text-outline">02</div>
+<h3 class="font-headline-md text-headline-md text-primary">Dosha Engine</h3>
+</div>
+<div class="glass-panel p-6 rounded-3xl border-l-4 border-l-primary shadow-sm pulse-glow bg-white">
+<div class="flex items-center gap-4 mb-4 border-b border-outline-variant/20 pb-4">
+<div class="w-12 h-12 rounded-xl bg-primary text-white flex items-center justify-center">
+<span class="material-symbols-outlined" style="font-variation-settings: 'FILL' 1;">analytics</span>
+</div>
+<div>
+<h4 class="font-headline-md text-headline-md text-[20px] mb-1">State Analysis</h4>
+<span class="inline-block px-2 py-1 rounded-md bg-secondary-container text-on-secondary-container font-label-sm text-[10px] uppercase">Core ML Model</span>
+</div>
+</div>
+<div class="space-y-4">
+<div>
+<h5 class="font-label-md text-label-md text-primary mb-1 flex items-center gap-2">
+<span class="w-1.5 h-1.5 rounded-full bg-primary-fixed"></span> Prakriti Model
+                                    </h5>
+<p class="font-body-sm text-body-sm text-on-surface-variant pl-3.5">Establishes baseline constitutional blueprint.</p>
+</div>
+<div>
+<h5 class="font-label-md text-label-md text-primary mb-1 flex items-center gap-2">
+<span class="w-1.5 h-1.5 rounded-full bg-error-container"></span> Vikriti Detection
+                                    </h5>
+<p class="font-body-sm text-body-sm text-on-surface-variant pl-3.5">Identifies real-time deviations and imbalances.</p>
+</div>
+</div>
+</div>
+</div>
+<!-- Layer 3: Knowledge & Reasoning -->
+<div class="flex-1 space-y-6 node-container flex flex-col justify-center">
+<div class="flex items-center gap-3 mb-8 lg:absolute lg:top-0">
+<div class="w-8 h-8 rounded-full bg-surface-container flex items-center justify-center text-outline">03</div>
+<h3 class="font-headline-md text-headline-md text-primary">Reasoning</h3>
+</div>
+<div class="glass-panel p-6 rounded-3xl border-l-4 border-l-secondary shadow-sm bg-white">
+<div class="space-y-6">
+<div class="flex gap-4">
+<div class="mt-1 w-8 h-8 rounded-full bg-surface-variant flex items-center justify-center text-on-surface-variant shrink-0">
+<span class="material-symbols-outlined text-[16px]" style="font-variation-settings: 'FILL' 0;">database</span>
+</div>
+<div>
+<h4 class="font-label-md text-label-md text-primary mb-1">Ayurvedic Vector DB</h4>
+<p class="font-body-sm text-body-sm text-on-surface-variant">Retrieves relevant protocols, herbs, and practices based on Vikriti state.</p>
+</div>
+</div>
+<div class="flex gap-4">
+<div class="mt-1 w-8 h-8 rounded-full bg-surface-variant flex items-center justify-center text-on-surface-variant shrink-0">
+<span class="material-symbols-outlined text-[16px]" style="font-variation-settings: 'FILL' 0;">smart_toy</span>
+</div>
+<div>
+<h4 class="font-label-md text-label-md text-primary mb-1">AI Planner Agent</h4>
+<p class="font-body-sm text-body-sm text-on-surface-variant">Synthesizes knowledge with calendar constraints to generate actionable steps.</p>
+</div>
+</div>
+</div>
+</div>
+</div>
+<!-- Layer 4: Output -->
+<div class="flex-1 space-y-6 node-container flex flex-col justify-center">
+<div class="flex items-center gap-3 mb-8 lg:absolute lg:top-0">
+<div class="w-8 h-8 rounded-full bg-surface-container flex items-center justify-center text-outline">04</div>
+<h3 class="font-headline-md text-headline-md text-primary">Output</h3>
+</div>
+<div class="glass-panel p-6 rounded-3xl bg-primary text-white shadow-lg">
+<div class="flex items-center gap-3 mb-6">
+<span class="material-symbols-outlined text-primary-fixed" style="font-variation-settings: 'FILL' 1;">auto_awesome</span>
+<h4 class="font-headline-md text-headline-md text-[20px]">Personalized Flow</h4>
+</div>
+<ul class="space-y-3 font-body-sm text-body-sm text-primary-fixed/90">
+<li class="flex items-start gap-2">
+<span class="material-symbols-outlined text-[16px] mt-0.5">check_circle</span>
+                                    Dynamic Daily Schedule
+                                </li>
+<li class="flex items-start gap-2">
+<span class="material-symbols-outlined text-[16px] mt-0.5">check_circle</span>
+                                    Nutrition &amp; Movement Rx
+                                </li>
+<li class="flex items-start gap-2 border-t border-primary-container pt-3 mt-3">
+<span class="material-symbols-outlined text-[16px] mt-0.5 text-tertiary-fixed">shield</span>
+<span class="text-white">Safety Engine Verification</span>
+</li>
+</ul>
+</div>
+</div>
+</div>
+</div>
+</div>
+<!-- Footer -->
+<footer class="w-full py-12 px-margin-mobile md:px-margin-desktop max-w-container-max mx-auto flex flex-col md:flex-row justify-between items-center gap-6 bg-surface-container-lowest border-t border-outline-variant/10 mt-auto">
+<div class="flex flex-col items-center md:items-start gap-2">
+<span class="font-headline-sm text-headline-sm text-primary font-bold">Dinacharya AI</span>
+<span class="font-body-sm text-body-sm text-on-surface-variant">© 2024 Dinacharya AI. Intelligent Calm for the Modern Mind.</span>
+</div>
+<div class="flex flex-wrap justify-center gap-6">
+<a class="font-label-sm text-label-sm text-on-surface-variant hover:text-primary transition-colors opacity-80 hover:opacity-100" href="#">Privacy Policy</a>
+<a class="font-label-sm text-label-sm text-on-surface-variant hover:text-primary transition-colors opacity-80 hover:opacity-100" href="#">Terms of Service</a>
+<a class="font-label-sm text-label-sm text-on-surface-variant hover:text-primary transition-colors opacity-80 hover:opacity-100" href="#">Ayurvedic Principles</a>
+<a class="font-label-sm text-label-sm text-on-surface-variant hover:text-primary transition-colors opacity-80 hover:opacity-100" href="#">Contact</a>
+</div>
+</footer>
+</main>
+<script>
+        // Simple script to handle horizontal scroll on mobile for the diagram container
+        const scrollContainer = document.querySelector('.overflow-x-auto');
+        if(scrollContainer) {
+            let isDown = false;
+            let startX;
+            let scrollLeft;
+
+            scrollContainer.addEventListener('mousedown', (e) => {
+                isDown = true;
+                scrollContainer.classList.add('cursor-grabbing');
+                startX = e.pageX - scrollContainer.offsetLeft;
+                scrollLeft = scrollContainer.scrollLeft;
+            });
+            scrollContainer.addEventListener('mouseleave', () => {
+                isDown = false;
+                scrollContainer.classList.remove('cursor-grabbing');
+            });
+            scrollContainer.addEventListener('mouseup', () => {
+                isDown = false;
+                scrollContainer.classList.remove('cursor-grabbing');
+            });
+            scrollContainer.addEventListener('mousemove', (e) => {
+                if (!isDown) return;
+                e.preventDefault();
+                const x = e.pageX - scrollContainer.offsetLeft;
+                const walk = (x - startX) * 2; // Scroll-fast
+                scrollContainer.scrollLeft = scrollLeft - walk;
+            });
+        }
+    </script>
+
+<script src="/static/app.js"></script>
+</body></html>

@@ -1,0 +1,218 @@
+<!DOCTYPE html>
+
+<html class="scroll-smooth" lang="en"><head>
+<meta charset="utf-8"/>
+<meta content="width=device-width, initial-scale=1.0" name="viewport"/>
+<title>Dinacharya AI | Your Daily Ayurvedic AI Companion</title>
+<script src="https://cdn.tailwindcss.com?plugins=forms,container-queries"></script>
+<link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&amp;display=swap" rel="stylesheet"/>
+<link href="https://fonts.googleapis.com" rel="preconnect"/>
+<link crossorigin="" href="https://fonts.gstatic.com" rel="preconnect"/>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&amp;family=Playfair+Display:wght@600;700&amp;display=swap" rel="stylesheet"/>
+<link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&amp;display=swap" rel="stylesheet"/>
+<script id="tailwind-config">
+        tailwind.config = {
+            darkMode: "class",
+            theme: {
+                extend: {
+                    "colors": {
+                        "on-secondary-fixed-variant": "#3b4c2c",
+                        "secondary-container": "#d2e6bc",
+                        "background": "#fcf9f8",
+                        "on-tertiary-fixed-variant": "#5a430f",
+                        "on-surface-variant": "#414943",
+                        "inverse-surface": "#303030",
+                        "outline-variant": "#c1c8c1",
+                        "on-error-container": "#93000a",
+                        "on-tertiary-fixed": "#261a00",
+                        "surface-container-low": "#f6f3f2",
+                        "on-primary": "#ffffff",
+                        "on-error": "#ffffff",
+                        "on-secondary-fixed": "#111f05",
+                        "primary-fixed-dim": "#a5d1b5",
+                        "surface-bright": "#fcf9f8",
+                        "surface": "#fcf9f8",
+                        "surface-container": "#f0eded",
+                        "on-secondary-container": "#576846",
+                        "on-surface": "#1b1c1c",
+                        "primary": "#093421",
+                        "surface-container-lowest": "#ffffff",
+                        "secondary": "#526442",
+                        "outline": "#717973",
+                        "tertiary-fixed-dim": "#e3c282",
+                        "on-primary-container": "#8fba9f",
+                        "error": "#ba1a1a",
+                        "surface-variant": "#e5e2e1",
+                        "tertiary-fixed": "#ffdea0",
+                        "on-secondary": "#ffffff",
+                        "secondary-fixed-dim": "#b9cda4",
+                        "inverse-on-surface": "#f3f0ef",
+                        "secondary-fixed": "#d5e9bf",
+                        "surface-dim": "#dcd9d9",
+                        "error-container": "#ffdad6",
+                        "on-tertiary": "#ffffff",
+                        "on-tertiary-container": "#ccac6e",
+                        "on-primary-fixed-variant": "#274e39",
+                        "primary-container": "#234b36",
+                        "surface-tint": "#3e6750",
+                        "tertiary-container": "#56400b",
+                        "on-background": "#1b1c1c",
+                        "surface-container-high": "#eae7e7",
+                        "on-primary-fixed": "#002112",
+                        "inverse-primary": "#a5d1b5",
+                        "surface-container-highest": "#e5e2e1",
+                        "tertiary": "#3c2a00",
+                        "primary-fixed": "#c0edd0"
+                    },
+                    "borderRadius": {
+                        "DEFAULT": "0.25rem",
+                        "lg": "0.5rem",
+                        "xl": "0.75rem",
+                        "full": "9999px"
+                    },
+                    "spacing": {
+                        "margin-mobile": "20px",
+                        "container-max": "1280px",
+                        "base": "8px",
+                        "gutter": "24px",
+                        "margin-desktop": "64px"
+                    },
+                    "fontFamily": {
+                        "body-md": ["Inter"],
+                        "display-lg-mobile": ["Playfair Display"],
+                        "body-lg": ["Inter"],
+                        "headline-md": ["Playfair Display"],
+                        "headline-lg": ["Playfair Display"],
+                        "display-lg": ["Playfair Display"],
+                        "label-md": ["Inter"],
+                        "body-sm": ["Inter"],
+                        "label-sm": ["Inter"]
+                    },
+                    "fontSize": {
+                        "body-md": ["16px", { "lineHeight": "1.5", "fontWeight": "400" }],
+                        "display-lg-mobile": ["36px", { "lineHeight": "1.2", "fontWeight": "700" }],
+                        "body-lg": ["18px", { "lineHeight": "1.6", "fontWeight": "400" }],
+                        "headline-md": ["24px", { "lineHeight": "1.3", "fontWeight": "600" }],
+                        "headline-lg": ["32px", { "lineHeight": "1.2", "fontWeight": "600" }],
+                        "display-lg": ["48px", { "lineHeight": "1.1", "letterSpacing": "-0.02em", "fontWeight": "700" }],
+                        "label-md": ["14px", { "lineHeight": "1", "letterSpacing": "0.05em", "fontWeight": "600" }],
+                        "body-sm": ["14px", { "lineHeight": "1.4", "fontWeight": "400" }],
+                        "label-sm": ["12px", { "lineHeight": "1", "fontWeight": "500" }]
+                    }
+                }
+            }
+        }
+    </script>
+<style>
+        body { background-color: #fcf9f8; } /* surface */
+        .glass-nav {
+            background: rgba(255, 255, 255, 0.7);
+            backdrop-filter: blur(12px);
+            -webkit-backdrop-filter: blur(12px);
+        }
+        .glow-shadow {
+            box-shadow: 0 10px 40px -10px rgba(0,0,0,0.04);
+        }
+        .ai-pulse {
+            animation: pulse-glow 3s infinite alternate;
+        }
+        @keyframes pulse-glow {
+            0% { box-shadow: 0 0 0 0 rgba(165, 209, 181, 0.4); } /* primary-fixed-dim */
+            100% { box-shadow: 0 0 20px 10px rgba(165, 209, 181, 0.1); }
+        }
+        .hero-blob {
+            background-image: radial-gradient(circle, rgba(213,233,191,0.4) 0%, rgba(252,249,248,0) 70%); /* secondary-fixed */
+        }
+    </style>
+</head>
+<body class="text-on-surface font-body-md antialiased overflow-x-hidden selection:bg-primary-container selection:text-on-primary-container">
+<!-- TopNavBar -->
+<nav class="bg-surface/70 dark:bg-surface/70 backdrop-blur-xl shadow-sm docked full-width top-0 sticky z-50 flex justify-between items-center w-full px-margin-desktop max-w-container-max mx-auto h-20 transition-all duration-300 border-b border-transparent">
+<div class="font-headline-md text-headline-md font-bold text-primary dark:text-primary-fixed">
+            Dinacharya AI
+        </div>
+<div class="hidden md:flex space-x-8 items-center font-body-md text-body-md">
+<a class="text-primary dark:text-primary-fixed border-b-2 border-primary dark:border-primary-fixed pb-1 hover:text-primary dark:hover:text-primary-fixed transition-colors" href="#">Science</a>
+<a class="text-on-surface-variant dark:text-outline-variant hover:text-primary dark:hover:text-primary-fixed transition-colors" href="#">Practices</a>
+<a class="text-on-surface-variant dark:text-outline-variant hover:text-primary dark:hover:text-primary-fixed transition-colors" href="#">About</a>
+</div>
+<div class="flex items-center gap-4">
+<button onclick="window.location.href='/login'" class="text-primary font-label-md text-label-md hover:text-primary/80 transition-colors">
+                Login
+            </button>
+<button class="bg-primary text-on-primary px-6 py-2.5 rounded-full font-label-md text-label-md hover:bg-primary/90 transition-colors shadow-sm scale-95 duration-200 transition-transform">
+                Get Started
+            </button>
+</div>
+</nav>
+<!-- Hero Section -->
+<section class="relative min-h-[921px] flex items-center pt-20 pb-32 overflow-hidden px-margin-mobile md:px-margin-desktop">
+<!-- Abstract Background Orbs -->
+<div class="absolute top-0 right-0 w-[800px] h-[800px] hero-blob rounded-full -translate-y-1/4 translate-x-1/4 -z-10 blur-3xl opacity-60"></div>
+<div class="absolute bottom-0 left-0 w-[600px] h-[600px] rounded-full bg-tertiary-fixed-dim/20 -translate-x-1/3 translate-y-1/3 -z-10 blur-3xl"></div>
+<div class="max-w-container-max mx-auto w-full grid grid-cols-1 lg:grid-cols-2 gap-gutter items-center">
+<!-- Text Content -->
+<div class="z-10 flex flex-col items-start max-w-2xl">
+<div class="inline-flex items-center gap-2 px-3 py-1.5 rounded-full bg-secondary-container/50 text-on-secondary-container font-label-sm text-label-sm mb-8 ai-pulse border border-secondary-fixed">
+<span class="material-symbols-outlined text-[16px]">psychology</span>
+<span>AI-Powered Wellness</span>
+</div>
+<h1 class="font-display-lg-mobile md:font-display-lg text-primary mb-6 leading-tight">
+                    Your Daily Ayurvedic AI Companion
+                </h1>
+<p class="font-body-lg text-on-surface-variant mb-10 max-w-lg">
+                    Personalized Dinacharya powered by Ayurveda, wearables, and artificial intelligence. Achieve intelligent calm through scientifically-backed daily routines.
+                </p>
+<div class="flex flex-col sm:flex-row gap-4 w-full sm:w-auto">
+<button class="bg-primary text-on-primary px-8 py-4 rounded-full font-label-md text-label-md hover:bg-primary/90 transition-all shadow-md flex items-center justify-center gap-2 group">
+                        Get Started
+                        <span class="material-symbols-outlined group-hover:translate-x-1 transition-transform">arrow_forward</span>
+</button>
+<button class="bg-transparent border border-outline text-on-surface px-8 py-4 rounded-full font-label-md text-label-md hover:bg-surface-variant transition-colors flex items-center justify-center gap-2">
+                        Take Prakriti Assessment
+                    </button>
+</div>
+</div>
+<!-- Visual Concept -->
+<div class="relative h-[500px] w-full flex items-center justify-center mt-12 lg:mt-0 z-10">
+<!-- Decorative frame imitating a high-end visualization -->
+<div class="absolute inset-0 bg-white/40 backdrop-blur-3xl rounded-[2rem] border border-white/60 glow-shadow flex items-center justify-center overflow-hidden">
+<img alt="Abstract 3D Dosha Visualization" class="w-full h-full object-cover opacity-90 mix-blend-multiply" data-alt="A serene, abstract 3D visualization representing Ayurvedic doshas (Vata, Pitta, Kapha) in a premium modern scientific style. Three fluid, ethereal glass-like orbs gently float in a pristine, bright, light-mode environment. The lighting is soft and highly diffused, creating a luxurious medical-grade aesthetic with subtle reflections. The color palette features sage greens, soft creams, and warm gold accents against a clean white background, evoking intelligent calm and cutting-edge digital wellness." src="https://lh3.googleusercontent.com/aida-public/AB6AXuBK1jKNN8A8v5T4G3aaj1uWfzPvOkZvVE14NcZnjc9cUQe9G2C3ZUoFJqMNUpc2eB5O41HYLZZ4Xu-U9sb3CBGtNN705TDvcXwibY1b4AYsBwWJt-zIY_5JRd-PsBp1FIM7QVRF79rL0qT-CfBK8oNfeL8UWIpg9ABJHRjBGFarlnZ9zvuB79IqTVoXPLgqzBFjD2ETWhU3_i0QmkvNpi9Mgans1YBswiqzHIcknf6n1Lf-N8MrLAMKW4lAi8-zLhQ6miXNntbyWw8"/>
+<!-- Floating Data Node 1 -->
+<div class="absolute top-1/4 left-10 bg-white/90 backdrop-blur-md p-3 rounded-2xl shadow-sm border border-outline-variant/30 flex items-center gap-3 animate-[bounce_4s_infinite_ease-in-out]">
+<div class="w-2 h-2 rounded-full bg-secondary"></div>
+<div>
+<p class="font-label-sm text-label-sm text-on-surface">Vata Energy</p>
+<p class="font-body-sm text-body-sm text-outline">Optimized</p>
+</div>
+</div>
+<!-- Floating Data Node 2 -->
+<div class="absolute bottom-1/3 right-8 bg-white/90 backdrop-blur-md p-3 rounded-2xl shadow-sm border border-outline-variant/30 flex items-center gap-3 animate-[bounce_5s_infinite_ease-in-out_reverse]">
+<div class="w-2 h-2 rounded-full bg-primary"></div>
+<div>
+<p class="font-label-sm text-label-sm text-on-surface">HRV Sync</p>
+<p class="font-body-sm text-body-sm text-outline">+12% today</p>
+</div>
+</div>
+</div>
+</div>
+</div>
+</section>
+<!-- Footer -->
+<footer class="bg-surface-container-lowest dark:bg-surface-container-lowest border-t border-outline-variant/10 w-full py-12 px-margin-desktop max-w-container-max mx-auto flex flex-col md:flex-row justify-between items-center gap-6 mt-32">
+<div class="font-headline-sm text-headline-sm text-primary">
+            Dinacharya AI
+        </div>
+<div class="flex flex-wrap gap-6 justify-center">
+<a class="font-label-sm text-label-sm text-on-surface-variant dark:text-outline-variant hover:text-primary transition-colors opacity-80 hover:opacity-100 transition-opacity" href="#">Privacy Policy</a>
+<a class="font-label-sm text-label-sm text-on-surface-variant dark:text-outline-variant hover:text-primary transition-colors opacity-80 hover:opacity-100 transition-opacity" href="#">Terms of Service</a>
+<a class="font-label-sm text-label-sm text-on-surface-variant dark:text-outline-variant hover:text-primary transition-colors opacity-80 hover:opacity-100 transition-opacity" href="#">Ayurvedic Principles</a>
+<a class="font-label-sm text-label-sm text-on-surface-variant dark:text-outline-variant hover:text-primary transition-colors opacity-80 hover:opacity-100 transition-opacity" href="#">Contact</a>
+</div>
+<div class="font-body-sm text-body-sm text-on-surface-variant dark:text-outline-variant text-center md:text-right">
+            © 2024 Dinacharya AI. Intelligent Calm for the Modern Mind.
+        </div>
+</footer>
+
+<script src="/static/app.js"></script>
+</body></html>

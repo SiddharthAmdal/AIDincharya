@@ -1,0 +1,143 @@
+<!DOCTYPE html>
+<html lang="en" class="scroll-smooth">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Login | Dinacharya AI</title>
+    <script src="https://cdn.tailwindcss.com?plugins=forms"></script>
+    <link href="https://fonts.googleapis.com/css2?family=Playfair+Display:wght@600;700&family=Inter:wght@400;500;600&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:opsz,wght,FILL,GRAD@20..48,100..700,0..1,-50..200" />
+    <script>
+        tailwind.config = {
+            theme: {
+                extend: {
+                    colors: {
+                        primary: '#006A60',
+                        'on-primary': '#FFFFFF',
+                        'primary-container': '#74F8E5',
+                        'on-primary-container': '#00201C',
+                        surface: '#F4FBF8',
+                        'surface-container': '#EAEFEE',
+                    },
+                    fontFamily: {
+                        display: ['Playfair Display', 'serif'],
+                        body: ['Inter', 'sans-serif'],
+                    }
+                }
+            }
+        }
+    </script>
+    <style>
+        .glass-card {
+            background: rgba(255, 255, 255, 0.7);
+            backdrop-filter: blur(12px);
+            -webkit-backdrop-filter: blur(12px);
+            border: 1px solid rgba(255, 255, 255, 0.3);
+            box-shadow: 0 8px 32px 0 rgba(0, 0, 0, 0.05);
+        }
+    </style>
+</head>
+<body class="bg-surface text-gray-900 font-body min-h-screen flex items-center justify-center bg-[url('https://images.unsplash.com/photo-1544367567-0f2fcb009e0b?auto=format&fit=crop&q=80')] bg-cover bg-center">
+    
+    <div class="absolute inset-0 bg-primary/20 backdrop-blur-sm"></div>
+
+    <main class="relative z-10 w-full max-w-md p-6">
+        <div class="glass-card rounded-3xl p-8 shadow-2xl">
+            <div class="flex items-center justify-center gap-3 mb-8">
+                <div class="w-12 h-12 rounded-2xl bg-primary flex items-center justify-center text-on-primary shadow-lg">
+                    <span class="material-symbols-outlined text-[24px]">spa</span>
+                </div>
+                <h1 class="font-display text-3xl font-bold text-primary">Dinacharya</h1>
+            </div>
+
+            <div class="flex border-b border-gray-300 mb-6">
+                <button id="tab-login" class="flex-1 py-3 font-semibold text-primary border-b-2 border-primary transition-colors">Login</button>
+                <button id="tab-register" class="flex-1 py-3 font-semibold text-gray-500 border-b-2 border-transparent hover:text-primary transition-colors">Register</button>
+            </div>
+
+            <form id="auth-form" class="space-y-5">
+                <div>
+                    <label class="block text-sm font-medium text-gray-700 mb-1">Username</label>
+                    <input type="text" id="username" required class="w-full rounded-xl border-gray-300 focus:border-primary focus:ring-primary bg-white/50 px-4 py-3">
+                </div>
+                <div>
+                    <label class="block text-sm font-medium text-gray-700 mb-1">Password</label>
+                    <input type="password" id="password" required class="w-full rounded-xl border-gray-300 focus:border-primary focus:ring-primary bg-white/50 px-4 py-3">
+                </div>
+                <button type="submit" id="submit-btn" class="w-full bg-primary text-white rounded-xl py-3.5 font-semibold shadow-lg hover:bg-primary/90 transition-colors mt-4">
+                    Sign In
+                </button>
+                <p id="error-msg" class="text-red-500 text-sm text-center hidden"></p>
+            </form>
+        </div>
+    </main>
+
+    <script>
+        let isLogin = true;
+        const tabLogin = document.getElementById('tab-login');
+        const tabRegister = document.getElementById('tab-register');
+        const submitBtn = document.getElementById('submit-btn');
+        const errorMsg = document.getElementById('error-msg');
+        
+        function switchTab(login) {
+            isLogin = login;
+            errorMsg.classList.add('hidden');
+            if (isLogin) {
+                tabLogin.classList.add('text-primary', 'border-primary');
+                tabLogin.classList.remove('text-gray-500', 'border-transparent');
+                tabRegister.classList.remove('text-primary', 'border-primary');
+                tabRegister.classList.add('text-gray-500', 'border-transparent');
+                submitBtn.innerText = 'Sign In';
+            } else {
+                tabRegister.classList.add('text-primary', 'border-primary');
+                tabRegister.classList.remove('text-gray-500', 'border-transparent');
+                tabLogin.classList.remove('text-primary', 'border-primary');
+                tabLogin.classList.add('text-gray-500', 'border-transparent');
+                submitBtn.innerText = 'Create Account';
+            }
+        }
+
+        tabLogin.addEventListener('click', () => switchTab(true));
+        tabRegister.addEventListener('click', () => switchTab(false));
+
+        document.getElementById('auth-form').addEventListener('submit', async (e) => {
+            e.preventDefault();
+            errorMsg.classList.add('hidden');
+            const username = document.getElementById('username').value;
+            const password = document.getElementById('password').value;
+            
+            const endpoint = isLogin ? '/api/auth/login' : '/api/auth/register';
+            submitBtn.innerText = 'Please wait...';
+            
+            try {
+                const res = await fetch(endpoint, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ username, password })
+                });
+                
+                const data = await res.json();
+                
+                if (!res.ok) {
+                    throw new Error(data.detail || 'Authentication failed');
+                }
+                
+                // Store Token
+                localStorage.setItem('dinacharya_token', data.token);
+                
+                // Route based on state
+                if (data.has_completed_onboarding) {
+                    window.location.href = '/dashboard';
+                } else {
+                    window.location.href = '/onboarding';
+                }
+                
+            } catch (err) {
+                errorMsg.innerText = err.message;
+                errorMsg.classList.remove('hidden');
+                submitBtn.innerText = isLogin ? 'Sign In' : 'Create Account';
+            }
+        });
+    </script>
+</body>
+</html>
