@@ -1,4 +1,4 @@
-from typing import List, Dict, Optional
+from typing import List, Dict, Optional, Any
 from pydantic import BaseModel, Field, model_validator
 
 
@@ -77,6 +77,17 @@ class DinacharyaSchedule(BaseModel):
 
 
 # Request and Response schemas for API
+class UserAuthRequest(BaseModel):
+    username: str
+    password: str
+
+class AuthResponse(BaseModel):
+    token: str
+    has_completed_onboarding: bool
+
+class QuestionnaireRequest(BaseModel):
+    responses: Dict[str, str]
+
 class ScheduleGenerateRequest(BaseModel):
     user_id: str
     questionnaire_responses: Optional[Dict[str, str]] = None
@@ -88,3 +99,7 @@ class AdherenceLogRequest(BaseModel):
     user_id: str
     completed_practices: List[str] = Field(..., description="Names of completed practices today")
     recommended_practices: List[str] = Field(..., description="Names of recommended practices today")
+
+class ChatRequest(BaseModel):
+    message: str
+    chat_history: Optional[List[Dict[str, str]]] = []

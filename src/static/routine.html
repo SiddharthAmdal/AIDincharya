@@ -237,21 +237,21 @@
 </div>
 <!-- Links -->
 <div class="flex-1 flex flex-col gap-2">
-<a class="flex items-center gap-3 text-on-surface-variant px-4 py-3 rounded-xl hover:bg-surface-container-high transition-all font-label-md text-label-md group" href="#">
+<a id="nav-dashboard" class="flex items-center gap-3 text-on-surface-variant px-4 py-3 rounded-xl hover:bg-surface-container-high transition-all font-label-md text-label-md group" href="/dashboard">
 <span class="material-symbols-outlined text-outline group-hover:text-primary transition-colors">dashboard</span>
                 Dashboard
             </a>
-<a class="flex items-center gap-3 bg-secondary-container text-on-secondary-container rounded-xl px-4 py-3 font-bold hover:bg-surface-container-high transition-all font-label-md text-label-md" href="#">
+<a id="nav-routine" class="flex items-center gap-3 bg-secondary-container text-on-secondary-container rounded-xl px-4 py-3 font-bold hover:bg-surface-container-high transition-all font-label-md text-label-md" href="/routine">
 <span class="material-symbols-outlined text-on-secondary-container fill">event_note</span>
                 Routine
             </a>
-<a class="flex items-center gap-3 text-on-surface-variant px-4 py-3 rounded-xl hover:bg-surface-container-high transition-all font-label-md text-label-md group" href="#">
+<a id="nav-insights" class="flex items-center gap-3 text-on-surface-variant px-4 py-3 rounded-xl hover:bg-surface-container-high transition-all font-label-md text-label-md group" href="/reasoning">
 <span class="material-symbols-outlined text-outline group-hover:text-primary transition-colors">psychology</span>
                 Insights
             </a>
-<a class="flex items-center gap-3 text-on-surface-variant px-4 py-3 rounded-xl hover:bg-surface-container-high transition-all font-label-md text-label-md group" href="#">
-<span class="material-symbols-outlined text-outline group-hover:text-primary transition-colors">account_circle</span>
-                Profile
+<a id="nav-logout" class="flex items-center gap-3 text-on-surface-variant px-4 py-3 rounded-xl hover:bg-surface-container-high transition-all font-label-md text-label-md group" href="/login">
+<span class="material-symbols-outlined text-outline group-hover:text-primary transition-colors">logout</span>
+                Log Out
             </a>
 </div>
 <!-- CTA / Status -->
@@ -291,7 +291,7 @@
 <p class="font-body-lg text-body-lg text-on-surface-variant max-w-2xl">A personalized rhythm designed to ground Vata and soothe Pitta, optimizing your energy throughout the day.</p>
 </div>
 <!-- Timeline Container -->
-<div class="relative max-w-3xl">
+<div id="routine-timeline-container" class="relative max-w-3xl">
 <!-- Vertical Line (Desktop/Tablet) -->
 <div class="hidden sm:block absolute left-[120px] top-8 bottom-8 w-[2px] bg-outline-variant/30 z-0"></div>
 <!-- Timeline Section: Morning -->
