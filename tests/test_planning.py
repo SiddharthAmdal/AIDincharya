@@ -1,11 +1,17 @@
 import time
 from fastapi.testclient import TestClient
-from main import app
+from main import app, get_current_user
 from src.models import DoshaProfile, DoshaVector, UserContext
 from src.planning.agent import DinacharyaPlannerAgent
 from src.planning.tools import check_calendar_conflicts
 
 client = TestClient(app)
+
+# Mock Authentication for Tests
+def mocked_get_current_user():
+    return 1 # Return a default user ID
+
+app.dependency_overrides[get_current_user] = mocked_get_current_user
 
 
 def test_calendar_conflicts_tool():
@@ -32,13 +38,14 @@ def test_planning_agent_generate():
     )
     
     planner = DinacharyaPlannerAgent()
-    schedule = planner.generate(
+    result = planner.generate(
         user_id="user_test_99",
         profile=profile,
         context=context,
         adherence_score=0.9,
         complexity="Moderate"
     )
+    schedule = result["schedule"]
     
     assert schedule.user_id == "user_test_99"
     assert len(schedule.morning_block) > 0
@@ -111,3 +118,67 @@ def test_api_adherence_log_closed_loop():
     assert data["adherence_score"] == 0.20
     assert data["next_complexity_level"] == "Anchor Habits"
     assert "focus on the essentials" in data["behavioral_nudge"]["title"].lower()
+
+
+import os
+
+def test_nvidia_provider_initialization():
+    """Verify that the DinacharyaPlannerAgent initializes correctly when LLM_PROVIDER is set to nvidia."""
+    # The config has been updated to use nvidia by default in .env
+    planner = DinacharyaPlannerAgent()
+    assert "api.nvidia.com" in str(planner.openai_client.base_url), "Planner is not using NVIDIA endpoint"
+
+def test_llm_fallback_simulation():
+    """Verify that the existing deterministic fallback planner executes when LLM API fails."""
+    planner = DinacharyaPlannerAgent()
+    # Break the API key to force a failure
+    planner.openai_client.api_key = "invalid_key_for_fallback_test"
+    
+    profile = DoshaProfile(
+        user_id="test_fallback",
+        prakriti=DoshaVector(vata=0.8, pitta=0.1, kapha=0.1),
+        timestamp=time.time()
+    )
+    context = UserContext(season="Winter", weather="Cold", temperature_c=10.0, calendar_events=[], self_report_symptoms=[])
+    
+    result = planner.generate(
+        user_id="test_fallback",
+        profile=profile,
+        context=context,
+        adherence_score=0.9,
+        complexity="Moderate"
+    )
+    schedule = result["schedule"]
+    assert len(schedule.morning_block) > 0
+    # Deterministic fallback for Vata includes Brahma Muhurta Jagaran
+    assert any("Brahma Muhurta" in p.name for p in schedule.morning_block)
+
+def test_chat_safety_recalibration_with_fever():
+    """Verify that the Safety Engine overrides contraindicated practices (Abhyanga) during recalibration if the user has a fever."""
+    from src.models import Practice, DinacharyaSchedule
+    from src.safety.guardrails import ClinicalRuleEngine
+    
+    profile = DoshaProfile(
+        user_id="test_safety_recal",
+        prakriti=DoshaVector(vata=0.5, pitta=0.3, kapha=0.2),
+        timestamp=time.time()
+    )
+    # Inject fever into profile vikriti
+    profile.vikriti_flags.has_fever = True
+    
+    candidate_schedule = DinacharyaSchedule(
+        user_id="test_safety_recal",
+        adherence_score=1.0,
+        routine_complexity="Adaptive",
+        morning_block=[
+            Practice(name="Abhyanga (Oil Massage)", time_slot="06:30", duration_minutes=15, description="Warm oil massage", rationale="Calms Vata")
+        ],
+        midday_block=[],
+        evening_block=[],
+        timestamp=time.time()
+    )
+    
+    validated = ClinicalRuleEngine.validate(candidate_schedule, profile)
+    
+    # Abhyanga should be stripped because of fever
+    assert not any("abhyanga" in p.name.lower() for p in validated.morning_block)
