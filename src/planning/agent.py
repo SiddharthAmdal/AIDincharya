@@ -5,7 +5,20 @@ import time
 from typing import TypedDict, List, Dict, Any, Optional
 from openai import OpenAI
 from langgraph.graph import StateGraph, END
-from src.config import PUTER_BASE_URL, PUTER_API_KEY, NVIDIA_BASE_URL, NVIDIA_API_KEY, LLM_PROVIDER, DEFAULT_MODEL
+from src.config import (
+    DEFAULT_MODEL,
+    GEMINI_API_KEYS,
+    GEMINI_BASE_URL,
+    LLM_PROVIDER,
+    NVIDIA_API_KEY,
+    NVIDIA_BASE_URL,
+    OPENROUTER_API_KEY,
+    OPENROUTER_BASE_URL,
+    OPENROUTER_MODEL,
+    PUTER_API_KEY,
+    PUTER_BASE_URL,
+)
+from src.llm_client import build_llm_client
 from src.models import DoshaProfile, UserContext, Practice, DinacharyaSchedule
 from src.knowledge.retriever import AyurvedaKnowledgeBase
 from src.planning.tools import query_ayurvedic_knowledge, check_calendar_conflicts
@@ -41,19 +54,19 @@ class DinacharyaPlannerAgent:
     """
 
     def __init__(self):
-        # Initialize OpenAI client pointed to configured provider
-        if LLM_PROVIDER == "nvidia":
-            self.openai_client = OpenAI(
-                base_url=NVIDIA_BASE_URL,
-                api_key=NVIDIA_API_KEY,
-                timeout=60.0  # 30s timeout to prevent indefinite hangs on free-tier
-            )
-        else:
-            self.openai_client = OpenAI(
-                base_url=PUTER_BASE_URL,
-                api_key=PUTER_API_KEY,
-                timeout=60.0
-            )
+        self.openai_client = build_llm_client(
+            provider=LLM_PROVIDER,
+            default_model=DEFAULT_MODEL,
+            gemini_base_url=GEMINI_BASE_URL,
+            gemini_api_keys=GEMINI_API_KEYS,
+            openrouter_base_url=OPENROUTER_BASE_URL,
+            openrouter_api_key=OPENROUTER_API_KEY,
+            openrouter_model=OPENROUTER_MODEL,
+            puter_base_url=PUTER_BASE_URL,
+            puter_api_key=PUTER_API_KEY,
+            nvidia_base_url=NVIDIA_BASE_URL,
+            nvidia_api_key=NVIDIA_API_KEY,
+        )
         self.kb = AyurvedaKnowledgeBase()
 
     def retrieve_guidelines_node(self, state: AgentState) -> AgentState:
