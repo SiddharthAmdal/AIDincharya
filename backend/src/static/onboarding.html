@@ -1,0 +1,149 @@
+<!DOCTYPE html>
+<html lang="en" class="scroll-smooth">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Prakriti Assessment | Dinacharya AI</title>
+    <script src="https://cdn.tailwindcss.com?plugins=forms"></script>
+    <link href="https://fonts.googleapis.com/css2?family=Playfair+Display:wght@600;700&family=Inter:wght@400;500;600&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:opsz,wght,FILL,GRAD@20..48,100..700,0..1,-50..200" />
+    <script>
+        tailwind.config = {
+            theme: {
+                extend: {
+                    colors: {
+                        primary: '#006A60',
+                        'on-primary': '#FFFFFF',
+                        surface: '#F4FBF8',
+                    },
+                    fontFamily: {
+                        display: ['Playfair Display', 'serif'],
+                        body: ['Inter', 'sans-serif'],
+                    }
+                }
+            }
+        }
+    </script>
+</head>
+<body class="bg-surface text-gray-900 font-body min-h-screen">
+    <nav class="w-full bg-white shadow-sm py-4 px-8 flex items-center gap-3">
+        <div class="w-10 h-10 rounded-full bg-primary flex items-center justify-center text-white">
+            <span class="material-symbols-outlined">spa</span>
+        </div>
+        <h1 class="font-display text-2xl font-bold text-primary">Dinacharya AI</h1>
+    </nav>
+
+    <main class="max-w-2xl mx-auto py-12 px-6">
+        <div class="text-center mb-10">
+            <h2 class="font-display text-4xl text-primary mb-4">Discover Your Prakriti</h2>
+            <p class="text-gray-600 text-lg">Help us understand your unique mind-body constitution to personalize your daily routine.</p>
+        </div>
+
+        <form id="questionnaire-form" class="space-y-8 bg-white p-8 rounded-3xl shadow-[0_8px_30px_rgb(0,0,0,0.04)] border border-gray-100">
+            <!-- Question 1 -->
+            <div class="space-y-4">
+                <label class="block text-xl font-semibold text-gray-800">1. How would you describe your digestion (Agni)?</label>
+                <div class="space-y-3">
+                    <label class="flex items-center p-4 border border-gray-200 rounded-xl cursor-pointer hover:bg-gray-50 transition-colors">
+                        <input type="radio" name="q_digestion" value="vata" required class="text-primary focus:ring-primary w-5 h-5">
+                        <span class="ml-3 text-gray-700">Irregular, prone to bloating or gas</span>
+                    </label>
+                    <label class="flex items-center p-4 border border-gray-200 rounded-xl cursor-pointer hover:bg-gray-50 transition-colors">
+                        <input type="radio" name="q_digestion" value="pitta" class="text-primary focus:ring-primary w-5 h-5">
+                        <span class="ml-3 text-gray-700">Strong, sharp, prone to acidity if I skip meals</span>
+                    </label>
+                    <label class="flex items-center p-4 border border-gray-200 rounded-xl cursor-pointer hover:bg-gray-50 transition-colors">
+                        <input type="radio" name="q_digestion" value="kapha" class="text-primary focus:ring-primary w-5 h-5">
+                        <span class="ml-3 text-gray-700">Slow, steady, often feel heavy after eating</span>
+                    </label>
+                </div>
+            </div>
+
+            <!-- Question 2 -->
+            <div class="space-y-4">
+                <label class="block text-xl font-semibold text-gray-800">2. How is your sleep pattern?</label>
+                <div class="space-y-3">
+                    <label class="flex items-center p-4 border border-gray-200 rounded-xl cursor-pointer hover:bg-gray-50 transition-colors">
+                        <input type="radio" name="q_sleep" value="vata" required class="text-primary focus:ring-primary w-5 h-5">
+                        <span class="ml-3 text-gray-700">Light, easily interrupted, difficult to fall asleep</span>
+                    </label>
+                    <label class="flex items-center p-4 border border-gray-200 rounded-xl cursor-pointer hover:bg-gray-50 transition-colors">
+                        <input type="radio" name="q_sleep" value="pitta" class="text-primary focus:ring-primary w-5 h-5">
+                        <span class="ml-3 text-gray-700">Moderate, but I wake up feeling alert and driven</span>
+                    </label>
+                    <label class="flex items-center p-4 border border-gray-200 rounded-xl cursor-pointer hover:bg-gray-50 transition-colors">
+                        <input type="radio" name="q_sleep" value="kapha" class="text-primary focus:ring-primary w-5 h-5">
+                        <span class="ml-3 text-gray-700">Deep, heavy, hard to wake up in the morning</span>
+                    </label>
+                </div>
+            </div>
+            
+            <!-- Question 3 -->
+            <div class="space-y-4">
+                <label class="block text-xl font-semibold text-gray-800">3. How do you react to stress?</label>
+                <div class="space-y-3">
+                    <label class="flex items-center p-4 border border-gray-200 rounded-xl cursor-pointer hover:bg-gray-50 transition-colors">
+                        <input type="radio" name="q_stress" value="vata" required class="text-primary focus:ring-primary w-5 h-5">
+                        <span class="ml-3 text-gray-700">Anxiety, worry, overthinking</span>
+                    </label>
+                    <label class="flex items-center p-4 border border-gray-200 rounded-xl cursor-pointer hover:bg-gray-50 transition-colors">
+                        <input type="radio" name="q_stress" value="pitta" class="text-primary focus:ring-primary w-5 h-5">
+                        <span class="ml-3 text-gray-700">Frustration, irritation, anger</span>
+                    </label>
+                    <label class="flex items-center p-4 border border-gray-200 rounded-xl cursor-pointer hover:bg-gray-50 transition-colors">
+                        <input type="radio" name="q_stress" value="kapha" class="text-primary focus:ring-primary w-5 h-5">
+                        <span class="ml-3 text-gray-700">Withdrawal, avoidance, sluggishness</span>
+                    </label>
+                </div>
+            </div>
+
+            <button type="submit" id="submit-btn" class="w-full bg-primary text-white rounded-xl py-4 text-lg font-semibold shadow-lg hover:bg-primary/90 transition-colors mt-8">
+                Generate My Ayurvedic Routine
+            </button>
+        </form>
+    </main>
+
+    <script>
+        document.getElementById('questionnaire-form').addEventListener('submit', async (e) => {
+            e.preventDefault();
+            
+            const token = localStorage.getItem('dinacharya_token');
+            if (!token) {
+                window.location.href = '/login';
+                return;
+            }
+
+            const formData = new FormData(e.target);
+            const responses = {
+                q1: formData.get('q_digestion'),
+                q2: formData.get('q_sleep'),
+                q3: formData.get('q_stress')
+            };
+
+            const submitBtn = document.getElementById('submit-btn');
+            submitBtn.innerText = 'Analyzing your Doshas...';
+            submitBtn.disabled = true;
+
+            try {
+                const res = await fetch('/api/user/questionnaire', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                        'Authorization': `Bearer ${token}`
+                    },
+                    body: JSON.stringify({ responses })
+                });
+
+                if (!res.ok) throw new Error("Failed to save questionnaire");
+                
+                localStorage.removeItem('dinacharya_schedule_cache');
+                window.location.href = '/dashboard';
+            } catch (err) {
+                alert(err.message);
+                submitBtn.innerText = 'Generate My Ayurvedic Routine';
+                submitBtn.disabled = false;
+            }
+        });
+    </script>
+</body>
+</html>

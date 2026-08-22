@@ -1,0 +1,367 @@
+<!DOCTYPE html>
+
+<html class="light" lang="en"><head>
+<meta charset="utf-8"/>
+<meta content="width=device-width, initial-scale=1.0" name="viewport"/>
+<title>Dinacharya AI - User Dashboard</title>
+<script src="https://cdn.tailwindcss.com?plugins=forms,container-queries"></script>
+<link href="https://fonts.googleapis.com" rel="preconnect"/>
+<link crossorigin="" href="https://fonts.gstatic.com" rel="preconnect"/>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&amp;family=Playfair+Display:wght@600;700&amp;display=swap" rel="stylesheet"/>
+<link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&amp;display=swap" rel="stylesheet"/>
+<link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&amp;display=swap" rel="stylesheet"/>
+<script id="tailwind-config">
+        tailwind.config = {
+            darkMode: "class",
+            theme: {
+                extend: {
+                    "colors": {
+                        "on-secondary-fixed-variant": "#3b4c2c",
+                        "secondary-container": "#d2e6bc",
+                        "background": "#fcf9f8",
+                        "on-tertiary-fixed-variant": "#5a430f",
+                        "on-surface-variant": "#414943",
+                        "inverse-surface": "#303030",
+                        "outline-variant": "#c1c8c1",
+                        "on-error-container": "#93000a",
+                        "on-tertiary-fixed": "#261a00",
+                        "surface-container-low": "#f6f3f2",
+                        "on-primary": "#ffffff",
+                        "on-error": "#ffffff",
+                        "on-secondary-fixed": "#111f05",
+                        "primary-fixed-dim": "#a5d1b5",
+                        "surface-bright": "#fcf9f8",
+                        "surface": "#fcf9f8",
+                        "surface-container": "#f0eded",
+                        "on-secondary-container": "#576846",
+                        "on-surface": "#1b1c1c",
+                        "primary": "#093421",
+                        "surface-container-lowest": "#ffffff",
+                        "secondary": "#526442",
+                        "outline": "#717973",
+                        "tertiary-fixed-dim": "#e3c282",
+                        "on-primary-container": "#8fba9f",
+                        "error": "#ba1a1a",
+                        "surface-variant": "#e5e2e1",
+                        "tertiary-fixed": "#ffdea0",
+                        "on-secondary": "#ffffff",
+                        "secondary-fixed-dim": "#b9cda4",
+                        "inverse-on-surface": "#f3f0ef",
+                        "secondary-fixed": "#d5e9bf",
+                        "surface-dim": "#dcd9d9",
+                        "error-container": "#ffdad6",
+                        "on-tertiary": "#ffffff",
+                        "on-tertiary-container": "#ccac6e",
+                        "on-primary-fixed-variant": "#274e39",
+                        "primary-container": "#234b36",
+                        "surface-tint": "#3e6750",
+                        "tertiary-container": "#56400b",
+                        "on-background": "#1b1c1c",
+                        "surface-container-high": "#eae7e7",
+                        "on-primary-fixed": "#002112",
+                        "inverse-primary": "#a5d1b5",
+                        "surface-container-highest": "#e5e2e1",
+                        "tertiary": "#3c2a00",
+                        "primary-fixed": "#c0edd0"
+                    },
+                    "borderRadius": {
+                        "DEFAULT": "0.25rem",
+                        "lg": "0.5rem",
+                        "xl": "0.75rem",
+                        "full": "9999px",
+                        "2xl": "1rem",
+                        "3xl": "1.5rem"
+                    },
+                    "spacing": {
+                        "margin-mobile": "20px",
+                        "container-max": "1280px",
+                        "base": "8px",
+                        "gutter": "24px",
+                        "margin-desktop": "64px"
+                    },
+                    "fontFamily": {
+                        "body-md": ["Inter"],
+                        "display-lg-mobile": ["Playfair Display"],
+                        "body-lg": ["Inter"],
+                        "headline-md": ["Playfair Display"],
+                        "headline-lg": ["Playfair Display"],
+                        "display-lg": ["Playfair Display"],
+                        "label-md": ["Inter"],
+                        "body-sm": ["Inter"],
+                        "label-sm": ["Inter"]
+                    },
+                    "fontSize": {
+                        "body-md": ["16px", { "lineHeight": "1.5", "fontWeight": "400" }],
+                        "display-lg-mobile": ["36px", { "lineHeight": "1.2", "fontWeight": "700" }],
+                        "body-lg": ["18px", { "lineHeight": "1.6", "fontWeight": "400" }],
+                        "headline-md": ["24px", { "lineHeight": "1.3", "fontWeight": "600" }],
+                        "headline-lg": ["32px", { "lineHeight": "1.2", "fontWeight": "600" }],
+                        "display-lg": ["48px", { "lineHeight": "1.1", "letterSpacing": "-0.02em", "fontWeight": "700" }],
+                        "label-md": ["14px", { "lineHeight": "1", "letterSpacing": "0.05em", "fontWeight": "600" }],
+                        "body-sm": ["14px", { "lineHeight": "1.4", "fontWeight": "400" }],
+                        "label-sm": ["12px", { "lineHeight": "1", "fontWeight": "500" }]
+                    }
+                }
+            }
+        }
+    </script>
+<style>
+        .material-symbols-outlined {
+            font-variation-settings: 'FILL' 0, 'wght' 400, 'GRAD' 0, 'opsz' 24;
+        }
+        .material-symbols-outlined.fill {
+            font-variation-settings: 'FILL' 1, 'wght' 400, 'GRAD' 0, 'opsz' 24;
+        }
+        .glass-card {
+            background: rgba(255, 255, 255, 0.7);
+            backdrop-filter: blur(12px);
+            -webkit-backdrop-filter: blur(12px);
+            border: 1px solid rgba(255, 255, 255, 0.4);
+            box-shadow: 0 4px 40px -4px rgba(34, 34, 34, 0.04);
+        }
+        .ai-glow {
+            box-shadow: inset 0 0 20px rgba(165, 209, 181, 0.15);
+        }
+    </style>
+</head>
+<body class="bg-background text-on-background font-body-md text-body-md antialiased overflow-x-hidden min-h-screen flex">
+<!-- SideNavBar -->
+<nav aria-label="Sidebar Navigation" class="hidden md:flex fixed left-0 top-0 h-full flex-col py-8 px-4 z-40 border-r border-outline-variant/20 bg-surface shadow-[40px_0_40px_-40px_rgba(0,0,0,0.04)] w-64">
+<div class="flex items-center gap-3 mb-12 px-4">
+<span class="material-symbols-outlined text-primary text-3xl fill" data-icon="spa">spa</span>
+<div>
+<h1 class="font-headline-sm text-headline-sm font-bold text-primary">Wellness Portal</h1>
+<p class="font-body-sm text-body-sm text-on-surface-variant">Vata-Pitta Balance</p>
+</div>
+</div>
+<ul class="flex flex-col gap-2 flex-grow">
+<!-- Dashboard (Active) -->
+<li>
+<a id="nav-dashboard" aria-current="page" class="flex items-center gap-3 bg-secondary-container text-on-secondary-container rounded-xl px-4 py-3 font-label-md text-label-md font-bold transition-all" href="/dashboard">
+<span class="material-symbols-outlined fill" data-icon="dashboard">dashboard</span>
+                    Dashboard
+                </a>
+</li>
+<!-- Routine -->
+<li>
+<a id="nav-routine" aria-label="Routine" class="flex items-center gap-3 text-on-surface-variant px-4 py-3 font-label-md text-label-md hover:bg-surface-container-high transition-all rounded-xl" href="/routine">
+<span class="material-symbols-outlined" data-icon="event_note">event_note</span>
+                    Routine
+                </a>
+</li>
+<!-- Insights -->
+<li>
+<a id="nav-insights" aria-label="Insights" class="flex items-center gap-3 text-on-surface-variant px-4 py-3 font-label-md text-label-md hover:bg-surface-container-high transition-all rounded-xl" href="/reasoning">
+<span class="material-symbols-outlined" data-icon="psychology">psychology</span>
+                    Insights
+                </a>
+</li>
+<!-- Profile (Logout) -->
+<li>
+<a id="nav-logout" aria-label="Profile" class="flex items-center gap-3 text-on-surface-variant px-4 py-3 font-label-md text-label-md hover:bg-surface-container-high transition-all rounded-xl" href="/login">
+<span class="material-symbols-outlined" data-icon="logout">logout</span>
+                    Log Out
+                </a>
+</li>
+<!-- Test Mode: Simulate Fever -->
+<li class="mt-4 pt-4 border-t border-outline-variant/20">
+<label class="flex items-center gap-3 text-error px-4 py-3 font-label-md text-label-md hover:bg-error-container transition-all rounded-xl cursor-pointer">
+<input type="checkbox" id="simulate-fever-toggle" class="form-checkbox h-5 w-5 text-error rounded border-outline-variant bg-surface-container-lowest focus:ring-error">
+<span class="material-symbols-outlined text-error" data-icon="thermostat">thermostat</span>
+                    Test Mode: Simulate Fever
+                </label>
+</li>
+</ul>
+<div class="mt-auto px-4">
+<div class="glass-card rounded-xl p-4 flex items-center justify-between ai-glow">
+<div class="flex items-center gap-2">
+<span class="material-symbols-outlined text-primary" data-icon="memory">memory</span>
+<span class="font-label-sm text-label-sm text-primary font-bold">AI Sync Active</span>
+</div>
+<div class="w-2 h-2 rounded-full bg-primary animate-pulse"></div>
+</div>
+</div>
+</nav>
+<!-- Main Content Canvas -->
+<main class="flex-1 ml-0 md:ml-64 p-margin-mobile md:p-margin-desktop max-w-[1600px] w-full mx-auto flex flex-col gap-12">
+<!-- Header -->
+<header class="flex justify-between items-end">
+<div>
+<p class="font-body-lg text-body-lg text-on-surface-variant mb-2">Good morning,</p>
+<h2 class="font-display-lg-mobile md:font-display-lg text-display-lg-mobile md:text-display-lg text-primary">Welcome back, Kirrthana</h2>
+</div>
+<div class="hidden md:flex items-center gap-4">
+<button aria-label="Notifications" class="p-2 rounded-full bg-surface-container hover:bg-surface-container-high transition-colors text-on-surface-variant">
+<span class="material-symbols-outlined" data-icon="notifications">notifications</span>
+</button>
+<img alt="User Avatar" class="w-12 h-12 rounded-full object-cover border-2 border-surface-container" data-alt="A close-up portrait of a serene young woman with natural makeup, warm skin tones, and soft lighting. She is looking slightly off-camera with a calm, focused expression. The background is blurred and neutral, fitting perfectly into a clean, modern wellness app UI. The image exudes a sense of intelligent calm and professional well-being." src="https://lh3.googleusercontent.com/aida-public/AB6AXuD80spMrawOkno_0avBYdwt6l3a-5DWQKk0FLfxBDtMoCC0mHRmnyPjwuofd5dW26rBKZUTe_AD3JDXdU_zIi1ZTIRb5Ua84UCkMr_0NRe_LpGqrVY4Dp53UOcnvnJxFjwYvXiJm0HfSG1jHMCfoOW-skfkPfFvdZ5b4OikhKl6Qb38vdonnANHfZuRz9L5a17yfwOjWvOFKQoMgOCpMeq2Rcz0BJ8uK3Sd1ZSaWxSWTRuFbn2RY5AGjlmT3DVPQS1PLHAFsEyO1zA"/>
+</div>
+</header>
+<!-- Top Metrics (Bento Grid) -->
+<section class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6">
+<!-- Wellness Score -->
+<article class="bg-surface-container-lowest rounded-3xl p-6 shadow-[0_4px_40px_-4px_rgba(34,34,34,0.04)] flex flex-col justify-between h-48 border border-outline-variant/10 relative overflow-hidden group hover:-translate-y-1 transition-transform duration-300">
+<div class="absolute -right-4 -top-4 w-24 h-24 bg-primary/5 rounded-full blur-2xl"></div>
+<div>
+<div class="flex items-center justify-between mb-2 relative z-10">
+<span class="font-label-md text-label-md text-on-surface-variant uppercase tracking-wider">Wellness Score</span>
+<span class="material-symbols-outlined text-primary" data-icon="vital_signs">vital_signs</span>
+</div>
+<div class="flex items-baseline gap-2 relative z-10">
+<span class="font-headline-lg text-headline-lg text-primary">88</span>
+<span class="font-body-sm text-body-sm text-outline">/ 100</span>
+</div>
+</div>
+<div class="relative z-10 mt-4">
+<div class="h-1 w-full bg-surface-container rounded-full overflow-hidden">
+<div class="h-full bg-primary rounded-full w-[88%]"></div>
+</div>
+<p class="font-body-sm text-body-sm text-secondary mt-2 flex items-center gap-1">
+<span class="material-symbols-outlined text-[16px]" data-icon="trending_up">trending_up</span>
+                        +2 from yesterday
+                    </p>
+</div>
+</article>
+<!-- Sleep Score -->
+<article class="bg-surface-container-lowest rounded-3xl p-6 shadow-[0_4px_40px_-4px_rgba(34,34,34,0.04)] flex flex-col justify-between h-48 border border-outline-variant/10 relative overflow-hidden group hover:-translate-y-1 transition-transform duration-300">
+<div class="absolute -right-4 -bottom-4 w-32 h-32 bg-secondary/5 rounded-full blur-2xl"></div>
+<div>
+<div class="flex items-center justify-between mb-2 relative z-10">
+<span class="font-label-md text-label-md text-on-surface-variant uppercase tracking-wider">Sleep Score</span>
+<span class="material-symbols-outlined text-secondary" data-icon="bedtime">bedtime</span>
+</div>
+<div class="flex items-baseline gap-2 relative z-10">
+<span class="font-headline-lg text-headline-lg text-primary">92</span>
+<span class="font-body-sm text-body-sm text-outline">/ 100</span>
+</div>
+</div>
+<div class="relative z-10">
+<p class="font-headline-md text-headline-md text-secondary">7h 45m</p>
+<p class="font-body-sm text-body-sm text-on-surface-variant mt-1">Optimal restorative phase achieved.</p>
+</div>
+</article>
+<!-- Adherence Score -->
+<article class="bg-surface-container-lowest rounded-3xl p-6 shadow-[0_4px_40px_-4px_rgba(34,34,34,0.04)] flex flex-col justify-between h-48 border border-outline-variant/10 relative overflow-hidden group hover:-translate-y-1 transition-transform duration-300">
+<div class="absolute -left-4 -bottom-4 w-24 h-24 bg-tertiary-container/5 rounded-full blur-2xl"></div>
+<div>
+<div class="flex items-center justify-between mb-2 relative z-10">
+<span class="font-label-md text-label-md text-on-surface-variant uppercase tracking-wider">Adherence</span>
+<span class="material-symbols-outlined text-tertiary-container" data-icon="task_alt">task_alt</span>
+</div>
+<div class="flex items-baseline gap-2 relative z-10">
+<span class="font-headline-lg text-headline-lg text-primary">95%</span>
+</div>
+</div>
+<div class="flex gap-1 relative z-10 mt-auto">
+<!-- Mini chart representation -->
+<div class="h-8 w-1/5 bg-primary/20 rounded-t-sm mt-auto"></div>
+<div class="h-12 w-1/5 bg-primary/40 rounded-t-sm mt-auto"></div>
+<div class="h-10 w-1/5 bg-primary/60 rounded-t-sm mt-auto"></div>
+<div class="h-16 w-1/5 bg-primary/80 rounded-t-sm mt-auto"></div>
+<div class="h-20 w-1/5 bg-primary rounded-t-sm mt-auto"></div>
+</div>
+</article>
+<!-- Dosha Balance -->
+<article class="bg-surface-container-lowest rounded-3xl p-6 shadow-[0_4px_40px_-4px_rgba(34,34,34,0.04)] flex flex-col justify-between h-48 border border-outline-variant/10 relative overflow-hidden group hover:-translate-y-1 transition-transform duration-300 ai-glow">
+<div>
+<div class="flex items-center justify-between mb-2 relative z-10">
+<span class="font-label-md text-label-md text-on-surface-variant uppercase tracking-wider">Current Dosha</span>
+<span class="material-symbols-outlined text-primary-container" data-icon="all_inclusive">all_inclusive</span>
+</div>
+<div class="flex flex-col gap-1 relative z-10">
+<span class="font-headline-md text-headline-md text-primary">Vata Aggravated</span>
+</div>
+</div>
+<div class="flex gap-2 relative z-10 mt-auto">
+<span class="px-3 py-1 rounded-full bg-secondary-container text-on-secondary-container font-label-sm text-label-sm">Grounding</span>
+<span class="px-3 py-1 rounded-full bg-surface-container text-on-surface-variant font-label-sm text-label-sm">Warmth</span>
+</div>
+</article>
+</section>
+<!-- Lower Section Layout -->
+<section class="grid grid-cols-1 lg:grid-cols-3 gap-8 h-full">
+<!-- Today's Focus -->
+<div class="lg:col-span-2 glass-card rounded-3xl p-8 flex flex-col">
+<div class="flex justify-between items-center mb-6">
+<h3 class="font-headline-md text-headline-md text-primary">Today's Focus</h3>
+<button class="text-secondary hover:text-primary transition-colors font-label-md text-label-md flex items-center gap-1">
+                        View Full Routine <span class="material-symbols-outlined text-[18px]" data-icon="arrow_forward">arrow_forward</span>
+</button>
+</div>
+<div id="dashboard-tasks-container" class="flex flex-col gap-4">
+<!-- Task 1 -->
+<div class="flex items-center gap-4 p-4 rounded-2xl border border-outline-variant/20 bg-surface-container-lowest/50 hover:bg-surface-container-lowest transition-colors cursor-pointer group">
+<div class="w-12 h-12 rounded-full bg-secondary-container flex items-center justify-center text-on-secondary-container shrink-0">
+<span class="material-symbols-outlined" data-icon="self_improvement">self_improvement</span>
+</div>
+<div class="flex-grow">
+<h4 class="font-label-md text-label-md text-on-surface mb-1 group-hover:text-primary transition-colors">15m Grounding Meditation</h4>
+<p class="font-body-sm text-body-sm text-on-surface-variant">To pacify active Vata energy.</p>
+</div>
+<div class="w-6 h-6 rounded-full border-2 border-outline-variant flex items-center justify-center group-hover:border-primary transition-colors shrink-0">
+</div>
+</div>
+<!-- Task 2 -->
+<div class="flex items-center gap-4 p-4 rounded-2xl border border-outline-variant/20 bg-surface-container-lowest/50 hover:bg-surface-container-lowest transition-colors cursor-pointer group">
+<div class="w-12 h-12 rounded-full bg-primary-container text-on-primary-container flex items-center justify-center shrink-0">
+<span class="material-symbols-outlined" data-icon="local_drink">local_drink</span>
+</div>
+<div class="flex-grow">
+<h4 class="font-label-md text-label-md text-on-surface mb-1 group-hover:text-primary transition-colors">Warm Lemon Water</h4>
+<p class="font-body-sm text-body-sm text-on-surface-variant">Hydration and gentle digestive stimulation.</p>
+</div>
+<div class="w-6 h-6 rounded-full border-2 border-outline-variant flex items-center justify-center group-hover:border-primary transition-colors shrink-0">
+</div>
+</div>
+</div>
+</div>
+<!-- Insight Highlight -->
+<div class="bg-primary rounded-3xl p-8 text-on-primary flex flex-col justify-between relative overflow-hidden">
+<div class="absolute top-0 right-0 w-64 h-64 bg-primary-fixed-dim/20 rounded-full blur-3xl -translate-y-1/2 translate-x-1/4"></div>
+<div class="relative z-10">
+<div class="flex items-center gap-2 mb-6 text-primary-fixed">
+<span class="material-symbols-outlined" data-icon="auto_awesome">auto_awesome</span>
+<span class="font-label-sm text-label-sm uppercase tracking-widest">AI Insight</span>
+</div>
+<h3 class="font-headline-md text-headline-md mb-4 text-white">Your sleep architecture is optimizing.</h3>
+<p class="font-body-md text-body-md text-primary-fixed-dim/90">
+                        By consistently shifting your dinner 45 minutes earlier, your Deep Sleep phase has increased by 18% this week. This directly correlates to your lowered Vata symptoms.
+                    </p>
+</div>
+<div class="mt-8 relative z-10">
+<button class="w-full py-3 px-6 rounded-xl border border-primary-fixed text-primary-fixed hover:bg-primary-fixed hover:text-primary transition-colors font-label-md text-label-md text-center">
+                        View Sleep Data
+                    </button>
+</div>
+</div>
+</section>
+</main>
+<!-- Floating AI Chat Widget -->
+<div class="fixed bottom-margin-mobile md:bottom-margin-desktop right-margin-mobile md:right-margin-desktop z-50">
+<button aria-label="Open AI Assistant" class="w-16 h-16 rounded-full bg-surface-container-lowest text-primary shadow-[0_8px_30px_rgba(0,0,0,0.12)] flex items-center justify-center border border-outline-variant/20 hover:scale-105 transition-transform duration-300 focus:outline-none focus:ring-2 focus:ring-primary focus:ring-offset-2 focus:ring-offset-background">
+<span class="material-symbols-outlined text-3xl" data-icon="forum">forum</span>
+<span class="absolute top-0 right-0 w-4 h-4 bg-secondary rounded-full border-2 border-surface-container-lowest"></span>
+</button>
+</div>
+<!-- Mobile Bottom Navigation (Visible only on mobile) -->
+<nav aria-label="Mobile Navigation" class="md:hidden fixed bottom-0 w-full glass-card border-t border-outline-variant/20 flex justify-around items-center h-20 z-40 pb-safe">
+<a aria-current="page" class="flex flex-col items-center gap-1 text-primary p-2" href="#">
+<span class="material-symbols-outlined fill" data-icon="dashboard">dashboard</span>
+<span class="font-label-sm text-label-sm">Dashboard</span>
+</a>
+<a aria-label="Routine" class="flex flex-col items-center gap-1 text-on-surface-variant p-2" href="#">
+<span class="material-symbols-outlined" data-icon="event_note">event_note</span>
+<span class="font-label-sm text-label-sm">Routine</span>
+</a>
+<a aria-label="Insights" class="flex flex-col items-center gap-1 text-on-surface-variant p-2" href="#">
+<span class="material-symbols-outlined" data-icon="psychology">psychology</span>
+<span class="font-label-sm text-label-sm">Insights</span>
+</a>
+<a aria-label="Profile" class="flex flex-col items-center gap-1 text-on-surface-variant p-2" href="#">
+<span class="material-symbols-outlined" data-icon="account_circle">account_circle</span>
+<span class="font-label-sm text-label-sm">Profile</span>
+</a>
+</nav>
+
+<script src="/static/app.js"></script>
+</body></html>

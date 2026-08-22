@@ -1,0 +1,207 @@
+<!DOCTYPE html>
+
+<html class="light" lang="en"><head>
+<meta charset="utf-8"/>
+<meta content="width=device-width, initial-scale=1.0" name="viewport"/>
+<title>Register | Dinacharya AI</title>
+<!-- Google Fonts -->
+<link href="https://fonts.googleapis.com" rel="preconnect"/>
+<link crossorigin="" href="https://fonts.gstatic.com" rel="preconnect"/>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&amp;family=Playfair+Display:wght@600;700&amp;display=swap" rel="stylesheet"/>
+<!-- Material Symbols -->
+<link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&amp;display=swap" rel="stylesheet"/>
+<!-- Tailwind CSS -->
+<script src="https://cdn.tailwindcss.com?plugins=forms,container-queries"></script>
+<script id="tailwind-config">
+        tailwind.config = {
+            darkMode: "class",
+            theme: {
+                extend: {
+                    "colors": {
+                        "secondary-fixed-dim": "#b9cda4",
+                        "on-primary-container": "#8fba9f",
+                        "surface-bright": "#fcf9f8",
+                        "on-tertiary-fixed": "#261a00",
+                        "tertiary-fixed": "#ffdea0",
+                        "tertiary-fixed-dim": "#e3c282",
+                        "error-container": "#ffdad6",
+                        "error": "#ba1a1a",
+                        "primary-container": "#234b36",
+                        "tertiary-container": "#56400b",
+                        "primary-fixed": "#c0edd0",
+                        "inverse-on-surface": "#f3f0ef",
+                        "inverse-primary": "#a5d1b5",
+                        "surface-dim": "#dcd9d9",
+                        "on-tertiary": "#ffffff",
+                        "on-surface": "#1b1c1c",
+                        "on-secondary": "#ffffff",
+                        "secondary": "#526442",
+                        "background": "#fcf9f8",
+                        "outline": "#717973",
+                        "on-error": "#ffffff",
+                        "surface-container-lowest": "#ffffff",
+                        "on-secondary-container": "#576846",
+                        "secondary-container": "#d2e6bc",
+                        "primary-fixed-dim": "#a5d1b5",
+                        "surface-container-highest": "#e5e2e1",
+                        "on-error-container": "#93000a",
+                        "on-tertiary-container": "#ccac6e",
+                        "on-primary-fixed": "#002112",
+                        "on-background": "#1b1c1c",
+                        "on-primary": "#ffffff",
+                        "on-primary-fixed-variant": "#274e39",
+                        "on-secondary-fixed": "#111f05",
+                        "inverse-surface": "#303030",
+                        "outline-variant": "#c1c8c1",
+                        "on-surface-variant": "#414943",
+                        "surface-container-low": "#f6f3f2",
+                        "on-tertiary-fixed-variant": "#5a430f",
+                        "tertiary": "#3c2a00",
+                        "surface": "#fcf9f8",
+                        "secondary-fixed": "#d5e9bf",
+                        "primary": "#093421",
+                        "on-secondary-fixed-variant": "#3b4c2c",
+                        "surface-variant": "#e5e2e1",
+                        "surface-tint": "#3e6750",
+                        "surface-container-high": "#eae7e7",
+                        "surface-container": "#f0eded"
+                    },
+                    "borderRadius": {
+                        "DEFAULT": "0.25rem",
+                        "lg": "0.5rem",
+                        "xl": "0.75rem",
+                        "full": "9999px"
+                    },
+                    "spacing": {
+                        "margin-mobile": "20px",
+                        "margin-desktop": "64px",
+                        "base": "8px",
+                        "gutter": "24px",
+                        "container-max": "1280px"
+                    },
+                    "fontFamily": {
+                        "body-md": ["Inter"],
+                        "label-sm": ["Inter"],
+                        "body-sm": ["Inter"],
+                        "headline-lg": ["Playfair Display"],
+                        "headline-md": ["Playfair Display"],
+                        "label-md": ["Inter"],
+                        "display-lg": ["Playfair Display"],
+                        "display-lg-mobile": ["Playfair Display"],
+                        "body-lg": ["Inter"]
+                    },
+                    "fontSize": {
+                        "body-md": ["16px", { "lineHeight": "1.5", "fontWeight": "400" }],
+                        "label-sm": ["12px", { "lineHeight": "1", "fontWeight": "500" }],
+                        "body-sm": ["14px", { "lineHeight": "1.4", "fontWeight": "400" }],
+                        "headline-lg": ["32px", { "lineHeight": "1.2", "fontWeight": "600" }],
+                        "headline-md": ["24px", { "lineHeight": "1.3", "fontWeight": "600" }],
+                        "label-md": ["14px", { "lineHeight": "1", "letterSpacing": "0.05em", "fontWeight": "600" }],
+                        "display-lg": ["48px", { "lineHeight": "1.1", "letterSpacing": "-0.02em", "fontWeight": "700" }],
+                        "display-lg-mobile": ["36px", { "lineHeight": "1.2", "fontWeight": "700" }],
+                        "body-lg": ["18px", { "lineHeight": "1.6", "fontWeight": "400" }]
+                    }
+                },
+            },
+        }
+    </script>
+<style>
+        .material-symbols-outlined {
+            font-variation-settings: "FILL" 0, "wght" 400, "GRAD" 0, "opsz" 24;
+            display: inline-block;
+            vertical-align: middle
+        }
+    </style>
+</head>
+<body class="bg-background text-on-background min-h-screen flex flex-col font-body-md overflow-x-hidden selection:bg-primary-container selection:text-white">
+<!-- Back to Home Link -->
+<a href="/" class="fixed top-8 left-8 z-[100] flex items-center gap-2 text-primary hover:opacity-70 transition-opacity font-label-md">
+    <span class="material-symbols-outlined">arrow_back</span>
+    Back to Home
+</a>
+<main class="flex-grow flex items-center justify-center p-6 md:p-margin-desktop">
+<div class="w-full max-w-xl py-12">
+<!-- Branding -->
+<div class="flex flex-col items-center gap-4 mb-16">
+<span class="material-symbols-outlined text-primary text-5xl" style="font-variation-settings: 'FILL' 1;">spa</span>
+<h1 class="font-headline-md text-headline-md font-bold text-primary tracking-tight">Dinacharya AI</h1>
+</div>
+<!-- Header -->
+<div class="mb-12 text-center">
+<h2 class="font-display-lg text-display-lg-mobile md:text-display-lg text-primary mb-6">Begin Your Journey to Balance</h2>
+<p class="font-body-lg text-body-lg text-on-surface-variant max-w-md mx-auto">Create your personalized wellness portal and synchronize with your natural rhythm.</p>
+</div>
+<!-- Sign-Up Form -->
+<form id="register-form" class="space-y-8 max-w-md mx-auto">
+<div class="space-y-3">
+<label class="font-label-md text-label-md text-on-surface-variant block" for="username">Username</label>
+<input class="w-full bg-transparent border-b border-outline-variant py-4 px-1 focus:outline-none focus:border-primary transition-all font-body-md text-on-surface placeholder:text-outline/30 text-lg" id="username" name="username" placeholder="your_username" type="text" required/>
+</div>
+<div class="space-y-3">
+<label class="font-label-md text-label-md text-on-surface-variant block" for="password">Password</label>
+<div class="relative">
+<input class="w-full bg-transparent border-b border-outline-variant py-4 px-1 focus:outline-none focus:border-primary transition-all font-body-md text-on-surface placeholder:text-outline/30 text-lg" id="password" name="password" placeholder="••••••••" type="password" required/>
+<button class="absolute right-2 top-1/2 -translate-y-1/2 text-on-surface-variant hover:text-primary" type="button">
+<span class="material-symbols-outlined">visibility</span>
+</button>
+</div>
+</div>
+<!-- Terms Checkbox -->
+<div class="flex items-start gap-4 py-4">
+<input class="mt-1 rounded border-outline text-primary-container focus:ring-primary-container h-5 w-5" id="terms" type="checkbox" required/>
+<label class="font-body-sm text-body-sm text-on-surface-variant leading-relaxed" for="terms">
+                    I agree to the <a class="text-primary-container font-semibold hover:underline" href="#">Terms of Service</a> and <a class="text-primary-container font-semibold hover:underline" href="#">Privacy Policy</a>.
+                </label>
+</div>
+<!-- Primary Action -->
+<button class="w-full bg-primary-container text-white py-5 rounded-xl font-label-md text-label-md uppercase tracking-[0.2em] shadow-lg hover:shadow-xl hover:bg-primary transition-all active:scale-[0.98] mt-4" type="submit">
+                Create Account
+            </button>
+</form>
+<!-- SSO Section -->
+<div class="mt-16 max-w-md mx-auto">
+<div class="relative flex items-center justify-center mb-10">
+<div class="flex-grow border-t border-outline-variant/30"></div>
+<span class="px-6 font-label-sm text-label-sm text-outline-variant bg-background">Or sign up with</span>
+<div class="flex-grow border-t border-outline-variant/30"></div>
+</div>
+<div class="grid grid-cols-2 gap-6">
+<button class="flex items-center justify-center gap-3 py-4 px-4 border border-outline-variant rounded-xl hover:bg-surface-container-low transition-all group">
+<img alt="Google Logo" class="w-5 h-5 opacity-80 group-hover:opacity-100" src="https://lh3.googleusercontent.com/aida-public/AB6AXuAgNmWytcv2vNOF9GNGIipg7ClB6qH2kXO8nAWUW2rj6SKFSnPfNx40tP5XztOwJHH28CXaLbmcGpouZSo1oA7JV408NEadXwllJrnbSpmdKCkxJrffbZOT696p5cc5uzaUk3rqhQ6a58K_7wSR_-kSBUUqUicmBl8BSnucEMfLirIoFHAuPrBmQpuDXTak6sjjBxOJpWKEXB7a_7js2j8fbFU89niJTvi8Ay70VZef_MRo7Kma3z_cWUOkfDVIC3uxTWJlzGa7c3g"/>
+<span class="font-label-md text-label-md text-on-surface-variant group-hover:text-on-surface">Google</span>
+</button>
+<button class="flex items-center justify-center gap-3 py-4 px-4 border border-outline-variant rounded-xl hover:bg-surface-container-low transition-all group">
+<span class="material-symbols-outlined text-2xl text-on-surface-variant group-hover:text-on-surface" style="font-variation-settings: 'FILL' 1;">ios</span>
+<span class="font-label-md text-label-md text-on-surface-variant group-hover:text-on-surface">Apple</span>
+</button>
+</div>
+</div>
+<!-- Footer Link -->
+<div class="mt-20 text-center">
+<p class="font-body-md text-body-md text-on-surface-variant">
+                Already have an account? 
+                <a class="text-primary-container font-bold hover:underline ml-1 tracking-wide" href="/login">Sign in</a>
+</p>
+</div>
+</div>
+</main>
+<!-- Decorative Atmospheric Glows -->
+<div class="fixed top-[-10%] right-[-10%] w-[50%] h-[50%] bg-primary-container/5 blur-[120px] pointer-events-none -z-10"></div>
+<div class="fixed bottom-[-10%] left-[-10%] w-[40%] h-[40%] bg-secondary-fixed-dim/5 blur-[100px] pointer-events-none -z-10"></div>
+
+<script src="/static/app.js"></script>
+<script>
+    // Simple Interaction logic for form focus states
+    const inputs = document.querySelectorAll('input[id="username"], input[type="password"]');
+    inputs.forEach(input => {
+        input.addEventListener('focus', () => {
+            const label = input.parentElement.parentElement.querySelector('label');
+            if (label) label.classList.add('text-primary');
+        });
+        input.addEventListener('blur', () => {
+            const label = input.parentElement.parentElement.querySelector('label');
+            if (label) label.classList.remove('text-primary');
+        });
+    });
+</script>
+</body></html>

@@ -1,0 +1,86 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  body {
+    @apply bg-background text-on-background font-body-md antialiased;
+  }
+}
+
+@layer components {
+  .material-symbols-outlined {
+    font-variation-settings: 'FILL' 0, 'wght' 400, 'GRAD' 0, 'opsz' 24;
+  }
+  
+  .material-symbols-outlined.fill,
+  .filled-icon {
+    font-variation-settings: 'FILL' 1, 'wght' 400, 'GRAD' 0, 'opsz' 24;
+  }
+  
+  .pulse-dot {
+    animation: pulse 1.5s cubic-bezier(0.4, 0, 0.6, 1) infinite;
+  }
+  
+  @keyframes pulse {
+    0%, 100% { opacity: 1; }
+    50% { opacity: .3; }
+  }
+  
+  .dosha-chart-container {
+    position: relative;
+    width: 200px;
+    height: 200px;
+    border-radius: 50%;
+    background: conic-gradient(
+      theme('colors.primary') 0% 45%,
+      theme('colors.secondary') 45% 80%,
+      theme('colors.tertiary') 80% 100%
+    );
+    mask: radial-gradient(transparent 55%, black 56%);
+    -webkit-mask: radial-gradient(transparent 55%, black 56%);
+  }
+  
+  .vikriti-overlay {
+    position: absolute;
+    top: -10px; left: -10px; right: -10px; bottom: -10px;
+    border-radius: 50%;
+    border: 2px dashed theme('colors.error');
+    opacity: 0.6;
+    animation: chartPulse 4s infinite ease-in-out;
+    pointer-events: none;
+  }
+  
+  @keyframes chartPulse {
+    0% { transform: scale(1); opacity: 0.4; }
+    50% { transform: scale(1.02); opacity: 0.8; }
+    100% { transform: scale(1); opacity: 0.4; }
+  }
+  
+  .no-scrollbar::-webkit-scrollbar {
+    display: none;
+  }
+  .no-scrollbar {
+    -ms-overflow-style: none;
+    scrollbar-width: none;
+  }
+  
+  .hero-pattern {
+    background-color: #fbf9f4;
+    background-image: radial-gradient(#dbdad5 1px, transparent 1px);
+    background-size: 24px 24px;
+  }
+  
+  .bento-grid {
+    display: grid;
+    grid-template-columns: repeat(12, 1fr);
+    gap: 24px;
+  }
+  
+  .bento-item {
+    background-color: theme('colors.surface-container-lowest');
+    border-radius: theme('borderRadius.xl');
+    border: 1px solid theme('colors.surface-variant');
+    padding: 24px;
+  }
+}

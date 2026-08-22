@@ -1,0 +1,186 @@
+import time
+from fastapi.testclient import TestClient
+from main import app, get_current_user
+from src.models import DoshaProfile, DoshaVector, UserContext
+from src.planning.agent import DinacharyaPlannerAgent
+from src.planning.tools import check_calendar_conflicts
+
+client = TestClient(app)
+
+# Mock Authentication for Tests
+def mocked_get_current_user():
+    return 1 # Return a default user ID
+
+app.dependency_overrides[get_current_user] = mocked_get_current_user
+
+
+def test_calendar_conflicts_tool():
+    """Verify that the calendar conflict checker identifies overlapping morning slots."""
+    events = ["9:00 AM Client Meeting", "12:00 PM Team Lunch"]
+    assert check_calendar_conflicts(events, "09:00 - 09:20") is True
+    assert check_calendar_conflicts(events, "12:00 - 12:45") is False # Only morning check active in stub
+    assert check_calendar_conflicts(events, "06:00 - 06:15") is False
+
+
+def test_planning_agent_generate():
+    """Verify that the planning agent compiles the LangGraph workflow and outputs a schedule."""
+    profile = DoshaProfile(
+        user_id="user_test_99",
+        prakriti=DoshaVector(vata=0.5, pitta=0.3, kapha=0.2),
+        timestamp=time.time()
+    )
+    context = UserContext(
+        season="Winter (Hemanta)",
+        weather="Cold and dry",
+        temperature_c=14.0,
+        calendar_events=["09:00 - 10:00 Morning Call"],
+        self_report_symptoms=[]
+    )
+    
+    planner = DinacharyaPlannerAgent()
+    result = planner.generate(
+        user_id="user_test_99",
+        profile=profile,
+        context=context,
+        adherence_score=0.9,
+        complexity="Moderate"
+    )
+    schedule = result["schedule"]
+    
+    assert schedule.user_id == "user_test_99"
+    assert len(schedule.morning_block) > 0
+    assert len(schedule.midday_block) > 0
+    assert len(schedule.evening_block) > 0
+
+
+def test_api_root():
+    """Verify that the root endpoint serves our beautiful SPA portal."""
+    response = client.get("/")
+    assert response.status_code == 200
+    assert "Dinacharya AI" in response.text
+
+
+
+def test_api_schedule_generation_flow():
+    """Verify end-to-end schedule generation endpoint, including stubs, planning, and safety checks."""
+    app.dependency_overrides[get_current_user] = mocked_get_current_user
+    payload = {
+        "user_id": "test_mobile_user_01",
+        "questionnaire_responses": {
+            "skin": "My skin is extremely dry and cracks easily",
+            "sleep": "I have light sleep and wake up easily by sounds"
+        },
+        "wearable_telemetry_7d": {
+            "hrv_ms": 35.0,        # Low HRV
+            "resting_hr": 68.0,
+            "sleep_hours": 5.4,     # Low sleep duration -> will aggravate Vata
+            "body_temp_c": 38.5     # Fever detected -> will strip Abhyanga
+        },
+        "context": {
+            "season": "Winter",
+            "weather": "Dry wind",
+            "temperature_c": 12.0,
+            "calendar_events": ["09:00 AM Standup Meeting"],
+            "self_report_symptoms": ["Active fever", "Fatigue"]
+        }
+    }
+    
+    response = client.post("/api/schedule/generate", json=payload)
+    assert response.status_code == 200
+    
+    data = response.json()
+    assert "schedule" in data
+    assert "dosha_profile" in data
+    assert "behavioral_nudge" in data
+    
+    # Verify that Perception flagged the imbalances
+    assert data["dosha_profile"]["vikriti_flags"]["vata_aggravated"] is True
+    assert data["dosha_profile"]["vikriti_flags"]["has_fever"] is True
+    
+    # Verify that Safety stripped Abhyanga/Nasya due to fever override
+    morning_block = data["schedule"]["morning_block"]
+    for p in morning_block:
+        assert "abhyanga" not in p["name"].lower()
+        assert "nasya" not in p["name"].lower()
+
+
+def test_api_adherence_log_closed_loop():
+    """Verify that logging low adherence dynamically shifts routine complexity down to Anchor Habits."""
+    app.dependency_overrides[get_current_user] = mocked_get_current_user
+    payload = {
+        "user_id": "test_mobile_user_01",
+        "completed_practices": ["Wake up call"],
+        "recommended_practices": ["Wake up call", "Abhyanga", "Lunch", "Dinner", "Meditation"]
+    }
+    # Adherence count: 1 / 5 = 0.20 -> triggers "Anchor Habits" complexity
+    response = client.post("/api/adherence/log", json=payload)
+    assert response.status_code == 200
+    
+    data = response.json()
+    assert data["adherence_score"] == 0.20
+    assert data["next_complexity_level"] == "Anchor Habits"
+    assert "focus on the essentials" in data["behavioral_nudge"]["title"].lower()
+
+
+import os
+
+def test_custom_llm_provider_initialization():
+    """Verify that the DinacharyaPlannerAgent initializes correctly with our Custom LLM provider configuration."""
+    planner = DinacharyaPlannerAgent()
+    assert planner.openai_client.base_url is not None
+    assert str(planner.openai_client.base_url) != ""
+
+def test_llm_fallback_simulation():
+    """Verify that the existing deterministic fallback planner executes when LLM API fails."""
+    planner = DinacharyaPlannerAgent()
+    # Break the API key to force a failure
+    planner.openai_client.api_key = "invalid_key_for_fallback_test"
+    
+    profile = DoshaProfile(
+        user_id="test_fallback",
+        prakriti=DoshaVector(vata=0.8, pitta=0.1, kapha=0.1),
+        timestamp=time.time()
+    )
+    context = UserContext(season="Winter", weather="Cold", temperature_c=10.0, calendar_events=[], self_report_symptoms=[])
+    
+    result = planner.generate(
+        user_id="test_fallback",
+        profile=profile,
+        context=context,
+        adherence_score=0.9,
+        complexity="Moderate"
+    )
+    schedule = result["schedule"]
+    assert len(schedule.morning_block) > 0
+    # Deterministic fallback for Vata includes Brahma Muhurta Jagaran
+    assert any("Brahma Muhurta" in p.name for p in schedule.morning_block)
+
+def test_chat_safety_recalibration_with_fever():
+    """Verify that the Safety Engine overrides contraindicated practices (Abhyanga) during recalibration if the user has a fever."""
+    from src.models import Practice, DinacharyaSchedule
+    from src.safety.guardrails import ClinicalRuleEngine
+    
+    profile = DoshaProfile(
+        user_id="test_safety_recal",
+        prakriti=DoshaVector(vata=0.5, pitta=0.3, kapha=0.2),
+        timestamp=time.time()
+    )
+    # Inject fever into profile vikriti
+    profile.vikriti_flags.has_fever = True
+    
+    candidate_schedule = DinacharyaSchedule(
+        user_id="test_safety_recal",
+        adherence_score=1.0,
+        routine_complexity="Adaptive",
+        morning_block=[
+            Practice(name="Abhyanga (Oil Massage)", time_slot="06:30", duration_minutes=15, description="Warm oil massage", rationale="Calms Vata")
+        ],
+        midday_block=[],
+        evening_block=[],
+        timestamp=time.time()
+    )
+    
+    validated = ClinicalRuleEngine.validate(candidate_schedule, profile)
+    
+    # Abhyanga should be stripped because of fever
+    assert not any("abhyanga" in p.name.lower() for p in validated.morning_block)
