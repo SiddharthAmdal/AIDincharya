@@ -1,27 +1,49 @@
-import React from 'react';
+import React, { useState } from 'react';
+import { useNavigate } from 'react-router-dom';
+import { useAuth } from '../context/AuthContext';
+import { NotificationsDrawer } from '../components/NotificationsDrawer';
+import { SettingsDrawer } from '../components/SettingsDrawer';
 
 export function Progress() {
+  const { profile } = useAuth();
+  const navigate = useNavigate();
+  
+  const [isNotificationsOpen, setIsNotificationsOpen] = useState(false);
+  const [isSettingsOpen, setIsSettingsOpen] = useState(false);
+
   return (
     <>
-      <header className="bg-surface docked full-width top-0 sticky z-30 flex justify-between items-center px-container-margin py-base w-full shadow-sm">
-        <h2 className="font-headline-md text-headline-md font-bold text-primary md:hidden">AiDincharya</h2>
-        <div className="hidden md:block">
+      <header className="flex justify-between items-center px-container-margin py-base w-full sticky top-0 z-30 bg-surface/80 backdrop-blur-md">
+        <div className="md:hidden flex items-center gap-3">
+          <button 
+            onClick={() => navigate('/profile')}
+            className="w-8 h-8 rounded-full bg-primary-container flex items-center justify-center text-on-primary-container font-bold overflow-hidden transition-transform hover:scale-105"
+          >
+            {profile?.user?.username?.charAt(0).toUpperCase() || 'U'}
+          </button>
+          <h1 className="font-headline-md text-headline-md font-bold text-primary">Progress</h1>
         </div>
-        <div className="flex items-center space-x-4 ml-auto">
-          <button className="text-on-surface-variant hover:opacity-80 transition-opacity">
+        <div className="hidden md:block">
+          <h1 className="font-headline-lg text-headline-lg font-bold text-on-surface">Your Progress</h1>
+        </div>
+        <div className="flex items-center gap-4 ml-auto">
+          <button 
+            onClick={() => setIsNotificationsOpen(true)}
+            className="w-10 h-10 rounded-full flex items-center justify-center text-on-surface-variant hover:bg-surface-container-highest transition-colors"
+          >
             <span className="material-symbols-outlined">notifications</span>
           </button>
-          <button className="text-on-surface-variant hover:opacity-80 transition-opacity">
+          <button 
+            onClick={() => setIsSettingsOpen(true)}
+            className="w-10 h-10 rounded-full flex items-center justify-center text-on-surface-variant hover:bg-surface-container-highest transition-colors"
+          >
             <span className="material-symbols-outlined">settings</span>
           </button>
-          <button className="hidden md:block font-label-md text-label-md text-on-surface-variant border border-outline px-4 py-1.5 rounded-full hover:bg-surface-variant transition-colors">
-            Test Mode
-          </button>
-          <div className="w-8 h-8 rounded-full overflow-hidden hidden md:block">
-            <img alt="User avatar" className="w-full h-full object-cover" src="https://lh3.googleusercontent.com/aida-public/AB6AXuAaWmOKk0TwStOEFTgcB2p0sW3nFXZiHC4p-C-VBvk9TYLct7JSkatpqPrBjKIfAlQpmrPufLpCrLqLF1D08JhwlMbN8OYbR1AAjpQkatq4YwtNBFAghNYZu79oDa7WKB1k7aQ1MD1RF3c6ORa5tEutSTJQFD2uBt538HkISYVT_J_KPnoqJynqeVXzMLlzi7DE3kBq09KF1ui72jSM08cffQzK2rxFlAxYQSkVm251wEibSRQxD3mniQ" />
-          </div>
         </div>
       </header>
+
+      <NotificationsDrawer isOpen={isNotificationsOpen} onClose={() => setIsNotificationsOpen(false)} />
+      <SettingsDrawer isOpen={isSettingsOpen} onClose={() => setIsSettingsOpen(false)} />
 
       <div className="w-full min-h-screen px-container-margin py-section-gap-md flex flex-col gap-section-gap-md pb-32">
         <header className="mb-4">

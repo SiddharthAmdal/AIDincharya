@@ -20,5 +20,9 @@ export const userService = {
 
   updateSettings: async (settings: UserSettings): Promise<StandardResponse> => {
     return apiClient.put<StandardResponse>('/api/user/settings', settings);
+  },
+
+  getPendingNotifications: async (): Promise<{ notifications: any[] }> => {
+    return apiClient.get<{ notifications: any[] }>('/api/notifications/pending');
   }
 };

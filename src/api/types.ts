@@ -9,6 +9,18 @@ export interface StandardResponse {
 }
 
 // User Types
+export interface NotificationItem {
+  id: string;
+  title: string;
+  message: string;
+  type: string;
+  timestamp?: number;
+}
+
+export interface NotificationsResponse {
+  notifications: NotificationItem[];
+}
+
 export interface User {
   id: number;
   username: string;
@@ -126,3 +138,26 @@ export interface KnowledgeSearchResponse {
   query: string;
   results: KnowledgeSearchResult[];
 }
+
+// Chat & Insights Types
+export interface ChatRequest {
+  message: string;
+}
+
+export interface ChatResponse {
+  response: string;
+  proposed_schedule?: Schedule;
+  timestamp: number;
+}
+
+export interface InsightNode {
+  category: string;
+  title: string;
+  desc: string;
+}
+
+export interface InsightsResponse {
+  insights: Record<string, InsightNode>;
+  timestamp: number;
+}
+

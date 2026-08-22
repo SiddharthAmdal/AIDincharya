@@ -1,63 +1,101 @@
 import React, { useEffect, useState } from 'react';
+import { useNavigate } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext';
 import { scheduleService, userService } from '../api';
 import type { ScheduleResponse, UserState } from '../api';
+import { HealthModal } from '../components/HealthModal';
+import { SettingsDrawer } from '../components/SettingsDrawer';
+import { NotificationsDrawer } from '../components/NotificationsDrawer';
+import { DoshaModal } from '../components/DoshaModal';
 
 export function Dashboard() {
   const { profile } = useAuth();
+  const navigate = useNavigate();
   const [scheduleData, setScheduleData] = useState<ScheduleResponse | null>(null);
   const [userState, setUserState] = useState<UserState | null>(null);
   const [loading, setLoading] = useState(true);
+  
+  const [isHealthModalOpen, setIsHealthModalOpen] = useState(false);
+  const [isSettingsOpen, setIsSettingsOpen] = useState(false);
+  const [isNotificationsOpen, setIsNotificationsOpen] = useState(false);
+  const [isDoshaModalOpen, setIsDoshaModalOpen] = useState(false);
 
   useEffect(() => {
-    async function loadData() {
-      try {
-        const [schedRes, stateRes] = await Promise.all([
-          scheduleService.getToday(),
-          userService.getState()
-        ]);
-        setScheduleData(schedRes);
-        setUserState(stateRes);
-      } catch (err) {
-        console.error("Failed to load dashboard data:", err);
-      } finally {
-        setLoading(false);
-      }
-    }
     loadData();
   }, []);
 
+  async function loadData() {
+    setLoading(true);
+    try {
+      const [schedRes, stateRes] = await Promise.all([
+        scheduleService.getToday(),
+        userService.getState()
+      ]);
+      setScheduleData(schedRes);
+      setUserState(stateRes);
+    } catch (err) {
+      console.error("Failed to load dashboard data:", err);
+    } finally {
+      setLoading(false);
+    }
+  }
+
   // Compute tasks for display
-  const allTasks = scheduleData ? [
-    ...scheduleData.schedule.morning_block,
-    ...scheduleData.schedule.midday_block,
-    ...scheduleData.schedule.evening_block
+  const allTasks = (scheduleData && scheduleData.schedule) ? [
+    ...(scheduleData.schedule.morning_block || []),
+    ...(scheduleData.schedule.midday_block || []),
+    ...(scheduleData.schedule.evening_block || [])
   ] : [];
 
   return (
     <>
       <header className="flex justify-between items-center px-container-margin py-base w-full sticky top-0 z-30 bg-surface/80 backdrop-blur-md">
         <div className="md:hidden flex items-center gap-3">
-          <div className="w-8 h-8 rounded-full bg-primary-container flex items-center justify-center text-on-primary-container font-bold overflow-hidden">
+          <button 
+            onClick={() => navigate('/profile')}
+            className="w-8 h-8 rounded-full bg-primary-container flex items-center justify-center text-on-primary-container font-bold overflow-hidden transition-transform hover:scale-105"
+          >
             {profile?.user?.username?.charAt(0).toUpperCase() || 'U'}
-          </div>
+          </button>
           <h1 className="font-headline-md text-headline-md font-bold text-primary">AiDincharya</h1>
         </div>
         <div className="hidden md:block"></div>
         <div className="flex items-center gap-4 ml-auto">
-          <span className="font-caption text-caption text-primary-container bg-primary-fixed-dim/20 px-2 py-1 rounded-md hidden sm:block border border-primary-fixed">Test Mode</span>
-          <button className="w-10 h-10 rounded-full flex items-center justify-center text-on-surface-variant hover:bg-surface-container-highest transition-colors">
+          <button 
+            onClick={() => setIsHealthModalOpen(true)}
+            className="w-10 h-10 rounded-full flex items-center justify-center text-on-surface-variant hover:bg-surface-container-highest transition-colors"
+            title="Log Health Telemetry"
+          >
+            <span className="material-symbols-outlined">vital_signs</span>
+          </button>
+          <button 
+            onClick={() => setIsNotificationsOpen(true)}
+            className="w-10 h-10 rounded-full flex items-center justify-center text-on-surface-variant hover:bg-surface-container-highest transition-colors"
+          >
             <span className="material-symbols-outlined">notifications</span>
           </button>
-          <button className="w-10 h-10 rounded-full flex items-center justify-center text-on-surface-variant hover:bg-surface-container-highest transition-colors">
+          <button 
+            onClick={() => setIsSettingsOpen(true)}
+            className="w-10 h-10 rounded-full flex items-center justify-center text-on-surface-variant hover:bg-surface-container-highest transition-colors"
+          >
             <span className="material-symbols-outlined">settings</span>
           </button>
         </div>
       </header>
 
+      {isHealthModalOpen && (
+        <HealthModal 
+          onClose={() => setIsHealthModalOpen(false)} 
+          onSuccess={() => loadData()} 
+        />
+      )}
+      <SettingsDrawer isOpen={isSettingsOpen} onClose={() => setIsSettingsOpen(false)} />
+      <NotificationsDrawer isOpen={isNotificationsOpen} onClose={() => setIsNotificationsOpen(false)} />
+      <DoshaModal isOpen={isDoshaModalOpen} onClose={() => setIsDoshaModalOpen(false)} doshaProfile={scheduleData?.dosha_profile || profile?.dosha_profile || null} />
+
       <div className="p-container-margin md:p-section-gap-md flex-1 space-y-section-gap-md pb-24 md:pb-8">
         {loading ? (
-          <div className="flex justify-center py-20 text-on-surface-variant font-body-md">Loading dashboard...</div>
+           <div className="flex justify-center py-20 text-on-surface-variant font-body-md">Loading dashboard...</div>
         ) : (
           <>
             <section>
@@ -78,7 +116,10 @@ export function Dashboard() {
                     <h3 className="font-headline-md text-headline-md text-on-background">Wellness State</h3>
                     <p className="font-body-md text-body-md text-on-surface-variant">Dosha Balance</p>
                   </div>
-                  <button className="text-primary hover:bg-primary-container/10 p-2 rounded-full transition-colors">
+                  <button 
+                    onClick={() => setIsDoshaModalOpen(true)}
+                    className="text-primary hover:bg-primary-container/10 p-2 rounded-full transition-colors"
+                  >
                     <span className="material-symbols-outlined">info</span>
                   </button>
                 </div>

@@ -1,10 +1,17 @@
 import React, { useEffect, useState } from 'react';
+import { useNavigate } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext';
 import { userService } from '../api';
+import { NotificationsDrawer } from '../components/NotificationsDrawer';
+import { SettingsDrawer } from '../components/SettingsDrawer';
 
 export function Profile() {
   const { profile } = useAuth();
+  const navigate = useNavigate();
   const [settings, setSettings] = useState<any>(null);
+
+  const [isNotificationsOpen, setIsNotificationsOpen] = useState(false);
+  const [isSettingsOpen, setIsSettingsOpen] = useState(false);
 
   useEffect(() => {
     async function loadSettings() {
@@ -25,25 +32,34 @@ export function Profile() {
 
   return (
     <>
-      <header className="flex justify-between items-center px-container-margin py-base w-full bg-surface docked full-width top-0 sticky z-40">
-        <div className="md:hidden">
-          <h1 className="font-headline-md text-headline-md font-bold text-primary">AiDincharya</h1>
-        </div>
-        <div className="hidden md:block">
-          <h2 className="font-headline-md text-headline-md text-on-surface">Profile</h2>
-        </div>
-        <div className="flex items-center gap-4">
-          <button className="text-on-surface-variant hover:opacity-80 transition-opacity">
-            <span className="material-symbols-outlined">notifications</span>
-          </button>
-          <button className="text-on-surface-variant hover:opacity-80 transition-opacity">
-            <span className="material-symbols-outlined">settings</span>
-          </button>
-          <div className="w-10 h-10 rounded-full bg-surface-variant flex items-center justify-center font-bold text-primary border border-outline-variant">
+      <header className="flex justify-between items-center px-container-margin py-base w-full sticky top-0 z-30 bg-surface/80 backdrop-blur-md">
+        <div className="md:hidden flex items-center gap-3">
+          <div className="w-8 h-8 rounded-full bg-primary-container flex items-center justify-center text-on-primary-container font-bold overflow-hidden">
             {profile?.user?.username?.charAt(0).toUpperCase() || 'U'}
           </div>
+          <h1 className="font-headline-md text-headline-md font-bold text-primary">Profile</h1>
+        </div>
+        <div className="hidden md:block">
+          <h1 className="font-headline-lg text-headline-lg font-bold text-on-surface">Your Profile</h1>
+        </div>
+        <div className="flex items-center gap-4 ml-auto">
+          <button 
+            onClick={() => setIsNotificationsOpen(true)}
+            className="w-10 h-10 rounded-full flex items-center justify-center text-on-surface-variant hover:bg-surface-container-highest transition-colors"
+          >
+            <span className="material-symbols-outlined">notifications</span>
+          </button>
+          <button 
+            onClick={() => setIsSettingsOpen(true)}
+            className="w-10 h-10 rounded-full flex items-center justify-center text-on-surface-variant hover:bg-surface-container-highest transition-colors"
+          >
+            <span className="material-symbols-outlined">settings</span>
+          </button>
         </div>
       </header>
+
+      <NotificationsDrawer isOpen={isNotificationsOpen} onClose={() => setIsNotificationsOpen(false)} />
+      <SettingsDrawer isOpen={isSettingsOpen} onClose={() => setIsSettingsOpen(false)} />
 
       <div className="flex-1 overflow-y-auto px-container-margin py-8 pb-32">
         <div className="max-w-7xl mx-auto space-y-section-gap-md">

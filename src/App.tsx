@@ -9,9 +9,10 @@ import { Progress } from './pages/Progress';
 import { Profile } from './pages/Profile';
 import { Welcome } from './pages/Welcome';
 import { LearnMore } from './pages/LearnMore';
+import { Onboarding } from './pages/Onboarding';
 
 function ProtectedRoute({ children }: { children: React.ReactNode }) {
-  const { isAuthenticated, isLoading } = useAuth();
+  const { isAuthenticated, isLoading, profile } = useAuth();
   
   if (isLoading) {
     return <div className="min-h-screen flex items-center justify-center bg-background text-on-background">Loading...</div>;
@@ -19,6 +20,12 @@ function ProtectedRoute({ children }: { children: React.ReactNode }) {
   
   if (!isAuthenticated) {
     return <Navigate to="/welcome" replace />;
+  }
+
+  // Only redirect to onboarding if the profile data explicitly shows it's incomplete
+  // and we are not currently loading the profile.
+  if (profile && !profile.state?.has_completed_onboarding) {
+     return <Navigate to="/onboarding" replace />;
   }
   
   return <Layout>{children}</Layout>;
@@ -31,6 +38,7 @@ function App() {
         <Routes>
           <Route path="/welcome" element={<Welcome />} />
           <Route path="/learn-more" element={<LearnMore />} />
+          <Route path="/onboarding" element={<Onboarding />} />
           
           {/* Protected routes wrapped in Layout via ProtectedRoute */}
           <Route path="/" element={<ProtectedRoute><Dashboard /></ProtectedRoute>} />

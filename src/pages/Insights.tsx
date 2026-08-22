@@ -50,14 +50,17 @@ export function Insights() {
     setIsLoading(true);
 
     try {
-      const res = await knowledgeService.search(userMessage.text);
-      const replyText = res.results.length > 0 
-        ? `I found some guidance in the texts: "${res.results[0].text}" (Source: ${res.results[0].source})` 
-        : "I'm sorry, I don't have enough context to answer that right now based on our classical texts.";
+      const res = await knowledgeService.chatAssistant({ message: userMessage.text });
+      
+      let replyText = res.response;
+      
+      if (res.proposed_schedule) {
+         replyText += "\n\n*(I have proposed a recalibrated schedule for you. Please check your Routine tab to see the updates!)*";
+      }
       
       setMessages(prev => [...prev, { id: Date.now().toString(), sender: 'vaidya', text: replyText }]);
     } catch (err) {
-      setMessages(prev => [...prev, { id: Date.now().toString(), sender: 'vaidya', text: "I'm having trouble accessing my knowledge base right now." }]);
+      setMessages(prev => [...prev, { id: Date.now().toString(), sender: 'vaidya', text: "I'm having trouble connecting to my knowledge base right now. Please ensure the backend is running with LLM access." }]);
     } finally {
       setIsLoading(false);
     }
@@ -93,7 +96,7 @@ export function Insights() {
                 )}
                 <div className={`max-w-[80%] ${msg.sender === 'user' ? 'bg-surface-container-high rounded-2xl rounded-tr-sm px-6 py-4 shadow-sm border border-surface-variant/50' : ''}`}>
                   {msg.sender === 'vaidya' ? (
-                    <div className="bg-surface-container-lowest rounded-2xl rounded-tl-sm px-6 py-4 shadow-[0_4px_20px_rgba(0,0,0,0.04)] border border-surface-variant">
+                    <div className="bg-surface-container-lowest rounded-2xl rounded-tl-sm px-6 py-4 shadow-[0_4px_20px_rgba(0,0,0,0.04)] border border-surface-variant whitespace-pre-wrap">
                       <p className="font-body-md text-body-md text-on-surface">{msg.text}</p>
                     </div>
                   ) : (
