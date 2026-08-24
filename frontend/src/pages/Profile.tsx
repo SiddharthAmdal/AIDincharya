@@ -6,24 +6,52 @@ import { NotificationsDrawer } from '../components/NotificationsDrawer';
 import { SettingsDrawer } from '../components/SettingsDrawer';
 
 export function Profile() {
-  const { profile } = useAuth();
+  const { profile, refreshProfile } = useAuth();
   const navigate = useNavigate();
   const [settings, setSettings] = useState<any>(null);
 
   const [isNotificationsOpen, setIsNotificationsOpen] = useState(false);
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
 
+  // Edit Profile Modal state
+  const [isEditProfileOpen, setIsEditProfileOpen] = useState(false);
+  const [location, setLocation] = useState('Earth');
+  const [bio, setBio] = useState('Cultivating balance through mindful daily rhythms and the wisdom of nature.');
+  const [isSaving, setIsSaving] = useState(false);
+
   useEffect(() => {
     async function loadSettings() {
       try {
         const s = await userService.getSettings();
-        setSettings(s);
+        const sData = s?.settings || s || {};
+        setSettings(sData);
+        if (sData.location) setLocation(sData.location);
+        if (sData.bio) setBio(sData.bio);
       } catch (err) {
         console.error("Failed to load settings:", err);
       }
     }
     loadSettings();
   }, []);
+
+  const handleSaveProfile = async () => {
+    setIsSaving(true);
+    try {
+      const updatedSettings = {
+        ...(settings || {}),
+        location,
+        bio
+      };
+      await userService.updateSettings(updatedSettings);
+      setSettings(updatedSettings);
+      await refreshProfile();
+      setIsEditProfileOpen(false);
+    } catch (err) {
+      console.error("Failed to save profile changes:", err);
+    } finally {
+      setIsSaving(false);
+    }
+  };
 
   const dosha = profile?.dosha_profile?.prakriti || { vata: 0.45, pitta: 0.35, kapha: 0.20 };
   const vataPct = Math.round(dosha.vata * 100);
@@ -43,13 +71,13 @@ export function Profile() {
           <h1 className="font-headline-lg text-headline-lg font-bold text-on-surface">Your Profile</h1>
         </div>
         <div className="flex items-center gap-4 ml-auto">
-          <button 
+          <button
             onClick={() => setIsNotificationsOpen(true)}
             className="w-10 h-10 rounded-full flex items-center justify-center text-on-surface-variant hover:bg-surface-container-highest transition-colors"
           >
             <span className="material-symbols-outlined">notifications</span>
           </button>
-          <button 
+          <button
             onClick={() => setIsSettingsOpen(true)}
             className="w-10 h-10 rounded-full flex items-center justify-center text-on-surface-variant hover:bg-surface-container-highest transition-colors"
           >
@@ -60,6 +88,83 @@ export function Profile() {
 
       <NotificationsDrawer isOpen={isNotificationsOpen} onClose={() => setIsNotificationsOpen(false)} />
       <SettingsDrawer isOpen={isSettingsOpen} onClose={() => setIsSettingsOpen(false)} />
+
+      {/* Edit Profile Modal */}
+      {isEditProfileOpen && (
+        <div className="fixed inset-0 bg-background/60 backdrop-blur-md z-50 flex items-center justify-center p-4">
+          <div className="bg-surface border border-surface-variant rounded-3xl p-6 md:p-8 max-w-lg w-full shadow-2xl relative animate-in fade-in zoom-in duration-200">
+            <div className="flex justify-between items-center mb-6">
+              <h2 className="font-headline-md text-headline-md font-bold text-on-surface flex items-center gap-2">
+                <span className="material-symbols-outlined text-primary">edit</span> Edit Profile
+              </h2>
+              <button
+                onClick={() => setIsEditProfileOpen(false)}
+                className="p-2 rounded-full hover:bg-surface-container text-on-surface-variant transition-colors"
+              >
+                <span className="material-symbols-outlined">close</span>
+              </button>
+            </div>
+
+            <div className="space-y-6">
+              <div>
+                <label className="block font-label-md text-label-md text-on-surface-variant mb-2">Location / Environment</label>
+                <input
+                  type="text"
+                  value={location}
+                  onChange={(e) => setLocation(e.target.value)}
+                  placeholder="e.g. New York, Earth"
+                  className="w-full px-4 py-3 rounded-2xl bg-surface-container-low border border-surface-variant text-on-surface focus:outline-none focus:border-primary transition-colors"
+                />
+              </div>
+
+              <div>
+                <label className="block font-label-md text-label-md text-on-surface-variant mb-2">Personal Philosophy / Bio</label>
+                <textarea
+                  rows={3}
+                  value={bio}
+                  onChange={(e) => setBio(e.target.value)}
+                  placeholder="Write your daily wellness intention..."
+                  className="w-full px-4 py-3 rounded-2xl bg-surface-container-low border border-surface-variant text-on-surface focus:outline-none focus:border-primary transition-colors resize-none"
+                />
+              </div>
+
+              <div className="pt-2 border-t border-surface-variant/60">
+                <div className="flex justify-between items-center p-4 bg-surface-container-lowest rounded-2xl border border-surface-variant/40">
+                  <div>
+                    <h4 className="font-body-md font-semibold text-on-surface">Ayurvedic Assessment</h4>
+                    <p className="font-caption text-caption text-on-surface-variant">Retake questionnaire to update your Prakriti & Dosha balance</p>
+                  </div>
+                  <button
+                    onClick={() => {
+                      setIsEditProfileOpen(false);
+                      navigate('/onboarding');
+                    }}
+                    className="px-4 py-2 bg-secondary/15 text-secondary border border-secondary/30 rounded-xl font-label-md hover:bg-secondary hover:text-on-secondary transition-all flex items-center gap-1 flex-shrink-0"
+                  >
+                    <span className="material-symbols-outlined text-[18px]">quiz</span> Retake
+                  </button>
+                </div>
+              </div>
+            </div>
+
+            <div className="mt-8 flex justify-end gap-3">
+              <button
+                onClick={() => setIsEditProfileOpen(false)}
+                className="px-6 py-2.5 rounded-full border border-surface-variant text-on-surface-variant hover:bg-surface-container font-label-md transition-colors"
+              >
+                Cancel
+              </button>
+              <button
+                onClick={handleSaveProfile}
+                disabled={isSaving}
+                className="px-8 py-2.5 rounded-full bg-primary text-on-primary font-label-md hover:bg-primary-container transition-all disabled:opacity-50 flex items-center gap-2"
+              >
+                {isSaving ? 'Saving...' : 'Save Profile'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       <div className="flex-1 overflow-y-auto px-container-margin py-8 pb-32">
         <div className="max-w-7xl mx-auto space-y-section-gap-md">
@@ -73,15 +178,18 @@ export function Profile() {
               </h1>
               <div className="flex items-center justify-center md:justify-start gap-2 text-on-surface-variant font-body-md mb-4">
                 <span className="material-symbols-outlined text-[20px]">location_on</span>
-                <span>Earth</span>
+                <span>{location}</span>
               </div>
               <p className="font-body-lg text-body-lg text-tertiary italic max-w-2xl">
-                "Cultivating balance through mindful daily rhythms and the wisdom of nature."
+                "{bio}"
               </p>
             </div>
             <div className="mt-4 md:mt-0">
-              <button className="px-6 py-2 border-2 border-primary text-primary font-label-md text-label-md rounded-full hover:bg-surface-container-low transition-colors">
-                Edit Profile
+              <button
+                onClick={() => setIsEditProfileOpen(true)}
+                className="px-6 py-2 border-2 border-primary text-primary font-label-md text-label-md rounded-full hover:bg-primary hover:text-on-primary transition-all flex items-center gap-2 shadow-sm"
+              >
+                <span className="material-symbols-outlined text-[18px]">edit</span> Edit Profile
               </button>
             </div>
           </div>
@@ -136,7 +244,10 @@ export function Profile() {
                   Incorporating aligned foods and a consistent daily schedule will help anchor your energy and maintain optimal balance.
                 </p>
                 <div className="mt-6">
-                  <button className="text-primary font-label-md text-label-md flex items-center gap-1 hover:underline">
+                  <button
+                    onClick={() => navigate('/reasoning')}
+                    className="text-primary font-label-md text-label-md flex items-center gap-1 hover:underline cursor-pointer"
+                  >
                     Read Full Report <span className="material-symbols-outlined text-[18px]">arrow_forward</span>
                   </button>
                 </div>
@@ -148,3 +259,4 @@ export function Profile() {
     </>
   );
 }
+

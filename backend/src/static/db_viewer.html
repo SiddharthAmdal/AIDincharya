@@ -1,0 +1,883 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Database Inspector - AIDincharya</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;500;600;700&family=Fira+Code:wght@400;500&display=swap" rel="stylesheet">
+  <style>
+    :root {
+      --bg-gradient: linear-gradient(135deg, #0f172a 0%, #1e1b4b 50%, #0f172a 100%);
+      --card-bg: rgba(30, 41, 59, 0.7);
+      --card-border: rgba(255, 255, 255, 0.1);
+      --text-main: #f8fafc;
+      --text-muted: #94a3b8;
+      --accent: #6366f1;
+      --accent-hover: #4f46e5;
+      --accent-light: rgba(99, 102, 241, 0.15);
+      --emerald: #10b981;
+      --amber: #f59e0b;
+      --pink: #ec4899;
+      --radius: 12px;
+      --font-main: 'Outfit', sans-serif;
+      --font-mono: 'Fira Code', monospace;
+    }
+
+    * {
+      box-sizing: border-box;
+      margin: 0;
+      padding: 0;
+    }
+
+    body {
+      font-family: var(--font-main);
+      background: var(--bg-gradient);
+      color: var(--text-main);
+      min-height: 100vh;
+      display: flex;
+      flex-direction: column;
+    }
+
+    /* Top Navbar */
+    header {
+      background: rgba(15, 23, 42, 0.85);
+      backdrop-filter: blur(12px);
+      border-bottom: 1px solid var(--card-border);
+      padding: 16px 28px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      position: sticky;
+      top: 0;
+      z-index: 10;
+    }
+
+    .brand {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+    }
+
+    .brand-icon {
+      width: 38px;
+      height: 38px;
+      background: linear-gradient(135deg, #6366f1, #a855f7);
+      border-radius: 10px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-weight: 700;
+      font-size: 1.2rem;
+      box-shadow: 0 4px 12px rgba(99, 102, 241, 0.3);
+    }
+
+    .brand-title {
+      font-size: 1.25rem;
+      font-weight: 700;
+      letter-spacing: -0.02em;
+    }
+
+    .brand-badge {
+      background: var(--accent-light);
+      color: var(--accent);
+      border: 1px solid rgba(99, 102, 241, 0.3);
+      font-size: 0.75rem;
+      font-weight: 600;
+      padding: 4px 10px;
+      border-radius: 20px;
+      margin-left: 8px;
+    }
+
+    .db-status {
+      display: flex;
+      align-items: center;
+      gap: 16px;
+    }
+
+    .db-tag {
+      font-family: var(--font-mono);
+      font-size: 0.85rem;
+      background: rgba(255, 255, 255, 0.05);
+      padding: 6px 14px;
+      border-radius: 8px;
+      border: 1px solid var(--card-border);
+      color: var(--text-muted);
+    }
+
+    .ist-status-tag {
+      font-family: var(--font-mono);
+      font-size: 0.82rem;
+      background: rgba(16, 185, 129, 0.12);
+      color: #34d399;
+      border: 1px solid rgba(16, 185, 129, 0.3);
+      padding: 6px 14px;
+      border-radius: 8px;
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      font-weight: 500;
+    }
+
+    .cell-ist-timestamp {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      font-family: var(--font-mono);
+      font-size: 0.85rem;
+      color: #38bdf8;
+      background: rgba(56, 189, 248, 0.08);
+      padding: 4px 10px;
+      border-radius: 6px;
+      border: 1px solid rgba(56, 189, 248, 0.25);
+    }
+
+    .ist-badge {
+      background: linear-gradient(135deg, #10b981, #059669);
+      color: #ffffff;
+      font-size: 0.68rem;
+      font-weight: 700;
+      padding: 2px 6px;
+      border-radius: 4px;
+      letter-spacing: 0.05em;
+      text-transform: uppercase;
+      box-shadow: 0 1px 4px rgba(16, 185, 129, 0.3);
+    }
+
+    .btn-refresh {
+      background: var(--accent);
+      color: #fff;
+      border: none;
+      padding: 8px 16px;
+      border-radius: 8px;
+      font-weight: 600;
+      font-size: 0.9rem;
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      transition: all 0.2s ease;
+    }
+
+    .btn-refresh:hover {
+      background: var(--accent-hover);
+      transform: translateY(-1px);
+    }
+
+    /* Main Container */
+    .app-container {
+      display: flex;
+      flex: 1;
+      overflow: hidden;
+    }
+
+    /* Sidebar */
+    aside {
+      width: 280px;
+      background: rgba(15, 23, 42, 0.6);
+      backdrop-filter: blur(8px);
+      border-right: 1px solid var(--card-border);
+      padding: 24px 16px;
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+    }
+
+    .sidebar-title {
+      font-size: 0.8rem;
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+      color: var(--text-muted);
+      margin-bottom: 12px;
+      padding-left: 8px;
+      font-weight: 600;
+    }
+
+    .table-item {
+      padding: 12px 16px;
+      border-radius: 10px;
+      color: var(--text-muted);
+      cursor: pointer;
+      font-weight: 500;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      transition: all 0.2s ease;
+      border: 1px solid transparent;
+    }
+
+    .table-item:hover {
+      background: rgba(255, 255, 255, 0.05);
+      color: var(--text-main);
+    }
+
+    .table-item.active {
+      background: var(--accent-light);
+      color: #fff;
+      border-color: rgba(99, 102, 241, 0.4);
+      font-weight: 600;
+    }
+
+    .table-badge {
+      font-size: 0.75rem;
+      background: rgba(255, 255, 255, 0.1);
+      padding: 2px 8px;
+      border-radius: 12px;
+      color: var(--text-muted);
+    }
+
+    .table-item.active .table-badge {
+      background: var(--accent);
+      color: #fff;
+    }
+
+    /* Main Content Area */
+    main {
+      flex: 1;
+      padding: 28px;
+      overflow-y: auto;
+      display: flex;
+      flex-direction: column;
+      gap: 20px;
+    }
+
+    /* Controls Bar */
+    .controls-card {
+      background: var(--card-bg);
+      backdrop-filter: blur(12px);
+      border: 1px solid var(--card-border);
+      border-radius: var(--radius);
+      padding: 18px 24px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 16px;
+      flex-wrap: wrap;
+    }
+
+    .active-info {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+    }
+
+    .active-title {
+      font-size: 1.4rem;
+      font-weight: 700;
+      text-transform: capitalize;
+    }
+
+    .row-count {
+      font-size: 0.85rem;
+      background: rgba(16, 185, 129, 0.15);
+      color: var(--emerald);
+      border: 1px solid rgba(16, 185, 129, 0.3);
+      padding: 4px 12px;
+      border-radius: 20px;
+      font-weight: 600;
+    }
+
+    .search-box {
+      display: flex;
+      align-items: center;
+      background: rgba(15, 23, 42, 0.8);
+      border: 1px solid var(--card-border);
+      border-radius: 8px;
+      padding: 8px 14px;
+      gap: 8px;
+      min-width: 280px;
+    }
+
+    .search-box input {
+      background: transparent;
+      border: none;
+      outline: none;
+      color: var(--text-main);
+      font-family: var(--font-main);
+      font-size: 0.9rem;
+      width: 100%;
+    }
+
+    .view-toggle {
+      display: flex;
+      background: rgba(15, 23, 42, 0.8);
+      border: 1px solid var(--card-border);
+      border-radius: 8px;
+      padding: 3px;
+    }
+
+    .view-btn {
+      background: transparent;
+      border: none;
+      color: var(--text-muted);
+      padding: 6px 14px;
+      border-radius: 6px;
+      font-size: 0.85rem;
+      font-weight: 600;
+      cursor: pointer;
+      transition: all 0.2s ease;
+    }
+
+    .view-btn.active {
+      background: var(--accent);
+      color: #fff;
+    }
+
+    /* Data Table Card */
+    .table-card {
+      background: var(--card-bg);
+      backdrop-filter: blur(12px);
+      border: 1px solid var(--card-border);
+      border-radius: var(--radius);
+      overflow: hidden;
+      display: flex;
+      flex-direction: column;
+    }
+
+    .table-wrapper {
+      overflow-x: auto;
+      max-height: 650px;
+    }
+
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      text-align: left;
+      font-size: 0.9rem;
+    }
+
+    th {
+      background: rgba(15, 23, 42, 0.9);
+      color: var(--text-muted);
+      font-weight: 600;
+      padding: 14px 18px;
+      border-bottom: 1px solid var(--card-border);
+      position: sticky;
+      top: 0;
+      z-index: 5;
+      font-family: var(--font-mono);
+      font-size: 0.8rem;
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+      white-space: nowrap;
+    }
+
+    td {
+      padding: 14px 18px;
+      border-bottom: 1px solid rgba(255, 255, 255, 0.05);
+      color: var(--text-main);
+      max-width: 320px;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    tr:hover td {
+      background: rgba(255, 255, 255, 0.03);
+    }
+
+    .cell-pk {
+      font-family: var(--font-mono);
+      font-weight: 600;
+      color: var(--amber);
+    }
+
+    .cell-json-badge {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      background: rgba(99, 102, 241, 0.2);
+      color: #818cf8;
+      border: 1px solid rgba(99, 102, 241, 0.4);
+      padding: 4px 10px;
+      border-radius: 6px;
+      font-family: var(--font-mono);
+      font-size: 0.78rem;
+      cursor: pointer;
+      transition: all 0.2s ease;
+    }
+
+    .cell-json-badge:hover {
+      background: var(--accent);
+      color: #fff;
+    }
+
+    .cell-null {
+      color: #64748b;
+      font-style: italic;
+    }
+
+    /* Schema Table */
+    .schema-table th {
+      background: rgba(15, 23, 42, 0.9);
+    }
+
+    /* JSON Modal */
+    .modal-overlay {
+      position: fixed;
+      top: 0;
+      left: 0;
+      right: 0;
+      bottom: 0;
+      background: rgba(15, 23, 42, 0.85);
+      backdrop-filter: blur(8px);
+      display: none;
+      align-items: center;
+      justify-content: center;
+      z-index: 100;
+      padding: 24px;
+    }
+
+    .modal-overlay.active {
+      display: flex;
+    }
+
+    .modal-card {
+      background: #0f172a;
+      border: 1px solid var(--card-border);
+      border-radius: var(--radius);
+      width: 100%;
+      max-width: 720px;
+      max-height: 85vh;
+      display: flex;
+      flex-direction: column;
+      box-shadow: 0 20px 40px rgba(0, 0, 0, 0.5);
+    }
+
+    .modal-header {
+      padding: 16px 24px;
+      border-bottom: 1px solid var(--card-border);
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+    }
+
+    .modal-title {
+      font-size: 1.1rem;
+      font-weight: 600;
+      font-family: var(--font-mono);
+      color: var(--amber);
+    }
+
+    .modal-close {
+      background: transparent;
+      border: none;
+      color: var(--text-muted);
+      font-size: 1.5rem;
+      cursor: pointer;
+      padding: 0 8px;
+    }
+
+    .modal-body {
+      padding: 20px 24px;
+      overflow-y: auto;
+      flex: 1;
+    }
+
+    pre {
+      font-family: var(--font-mono);
+      font-size: 0.85rem;
+      color: #a5f3fc;
+      white-space: pre-wrap;
+      word-break: break-word;
+      line-height: 1.5;
+    }
+
+    .empty-state {
+      padding: 60px 20px;
+      text-align: center;
+      color: var(--text-muted);
+    }
+
+    .empty-state h3 {
+      font-size: 1.2rem;
+      margin-bottom: 8px;
+      color: var(--text-main);
+    }
+  </style>
+</head>
+<body>
+
+  <header>
+    <div class="brand">
+      <div class="brand-icon">⚡</div>
+      <div class="brand-title">AIDincharya DB Inspector</div>
+      <span class="brand-badge">Standalone Admin UI</span>
+    </div>
+    <div class="db-status">
+      <span class="db-tag">📁 backend/dinacharya.db</span>
+      <span class="ist-status-tag" title="Timestamps are rendered in IST (UTC+5:30) for viewing. Stored database records remain untouched in UTC.">🕒 Display: IST (UTC+5:30)</span>
+      <button class="btn-refresh" id="btn-refresh">
+        <svg width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"/></svg>
+        Refresh Data
+      </button>
+    </div>
+  </header>
+
+  <div class="app-container">
+    <aside id="sidebar-tables">
+      <div class="sidebar-title">Database Tables</div>
+      <div id="table-list-container">
+        <!-- Dynamically filled -->
+      </div>
+    </aside>
+
+    <main>
+      <div class="controls-card">
+        <div class="active-info">
+          <div class="active-title" id="current-table-title">Select a Table</div>
+          <span class="row-count" id="total-rows-badge">0 Rows</span>
+        </div>
+
+        <div style="display: flex; gap: 12px; align-items: center;">
+          <div class="search-box">
+            <svg width="16" height="16" fill="none" stroke="#94a3b8" stroke-width="2" viewBox="0 0 24 24"><path d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"/></svg>
+            <input type="text" id="search-input" placeholder="Search table records...">
+          </div>
+
+          <div class="view-toggle">
+            <button class="view-btn active" id="btn-view-data">Data View</button>
+            <button class="view-btn" id="btn-view-schema">Schema Info</button>
+          </div>
+        </div>
+      </div>
+
+      <div class="table-card">
+        <div class="table-wrapper" id="content-area">
+          <div class="empty-state">
+            <h3>Loading Database Tables...</h3>
+            <p>Connecting to SQLite engine...</p>
+          </div>
+        </div>
+      </div>
+    </main>
+  </div>
+
+  <!-- JSON Viewer Modal -->
+  <div class="modal-overlay" id="json-modal">
+    <div class="modal-card">
+      <div class="modal-header">
+        <div class="modal-title" id="modal-json-title">JSON Column Content</div>
+        <button class="modal-close" id="modal-close">&times;</button>
+      </div>
+      <div class="modal-body">
+        <pre id="modal-json-content"></pre>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    let currentTable = '';
+    let currentView = 'data'; // 'data' | 'schema'
+    let searchTimeout = null;
+    let tablesData = [];
+    let tableMetaData = {};
+
+    document.addEventListener('DOMContentLoaded', () => {
+      fetchTables();
+
+      document.getElementById('btn-refresh').addEventListener('click', () => {
+        fetchTables();
+        if (currentTable) loadTableContent();
+      });
+
+      document.getElementById('search-input').addEventListener('input', (e) => {
+        clearTimeout(searchTimeout);
+        searchTimeout = setTimeout(() => {
+          if (currentTable) loadTableContent();
+        }, 300);
+      });
+
+      document.getElementById('btn-view-data').addEventListener('click', () => {
+        currentView = 'data';
+        updateViewButtons();
+        if (currentTable) loadTableContent();
+      });
+
+      document.getElementById('btn-view-schema').addEventListener('click', () => {
+        currentView = 'schema';
+        updateViewButtons();
+        if (currentTable) loadTableContent();
+      });
+
+      document.getElementById('modal-close').addEventListener('click', closeModal);
+      document.getElementById('json-modal').addEventListener('click', (e) => {
+        if (e.target.id === 'json-modal') closeModal();
+      });
+    });
+
+    function updateViewButtons() {
+      document.getElementById('btn-view-data').classList.toggle('active', currentView === 'data');
+      document.getElementById('btn-view-schema').classList.toggle('active', currentView === 'schema');
+    }
+
+    async function fetchTables() {
+      try {
+        const res = await fetch('/api/admin/db/tables');
+        const data = await res.json();
+        tablesData = data.tables || [];
+        renderSidebar();
+
+        if (tablesData.length > 0 && !currentTable) {
+          selectTable(tablesData[0]);
+        }
+      } catch (err) {
+        console.error("Failed to load tables:", err);
+      }
+    }
+
+    function renderSidebar() {
+      const container = document.getElementById('table-list-container');
+      container.innerHTML = '';
+
+      tablesData.forEach(t => {
+        const div = document.createElement('div');
+        div.className = `table-item ${t === currentTable ? 'active' : ''}`;
+        div.innerHTML = `
+          <span>${t}</span>
+          <span class="table-badge" id="badge-${t}">•</span>
+        `;
+        div.onclick = () => selectTable(t);
+        container.appendChild(div);
+      });
+    }
+
+    function selectTable(tableName) {
+      currentTable = tableName;
+      document.getElementById('current-table-title').innerText = tableName;
+      renderSidebar();
+      loadTableContent();
+    }
+
+    async function loadTableContent() {
+      if (!currentTable) return;
+      const contentArea = document.getElementById('content-area');
+      const searchQuery = document.getElementById('search-input').value.trim();
+
+      contentArea.innerHTML = `
+        <div class="empty-state">
+          <h3>Fetching records...</h3>
+        </div>
+      `;
+
+      try {
+        const url = `/api/admin/db/table/${currentTable}?search=${encodeURIComponent(searchQuery)}`;
+        const res = await fetch(url);
+        const data = await res.json();
+
+        tableMetaData[currentTable] = data;
+        document.getElementById('total-rows-badge').innerText = `${data.total || 0} Records`;
+        
+        const badge = document.getElementById(`badge-${currentTable}`);
+        if (badge) badge.innerText = data.total || 0;
+
+        if (currentView === 'data') {
+          renderDataTable(data);
+        } else {
+          renderSchemaTable(data.columns);
+        }
+      } catch (err) {
+        contentArea.innerHTML = `
+          <div class="empty-state">
+            <h3 style="color: #ef4444;">Error Loading Table Data</h3>
+            <p>${err.message}</p>
+          </div>
+        `;
+      }
+    }
+
+    function renderDataTable(data) {
+      const contentArea = document.getElementById('content-area');
+      const columns = data.columns || [];
+      const rows = data.rows || [];
+
+      if (rows.length === 0) {
+        contentArea.innerHTML = `
+          <div class="empty-state">
+            <h3>No Records Found</h3>
+            <p>This table is currently empty or no rows match your search query.</p>
+          </div>
+        `;
+        return;
+      }
+
+      let html = `<table><thead><tr>`;
+      columns.forEach(col => {
+        html += `<th>${col.name} ${col.pk ? '🔑' : ''}</th>`;
+      });
+      html += `</tr></thead><tbody>`;
+
+      rows.forEach(row => {
+        html += `<tr>`;
+        columns.forEach(col => {
+          const val = row[col.name];
+          html += `<td>${formatCellContent(col.name, val, col.pk)}</td>`;
+        });
+        html += `</tr>`;
+      });
+
+      html += `</tbody></table>`;
+      contentArea.innerHTML = html;
+    }
+
+    function formatTimestampToIST(val, colName) {
+      if (val === null || val === undefined || val === '' || val === 0 || val === '0') {
+        return null;
+      }
+
+      const lowerCol = (colName || '').toLowerCase();
+      const isTimeColumn = lowerCol.includes('timestamp') || 
+                           lowerCol.includes('created_at') || 
+                           lowerCol.includes('updated_at') || 
+                           lowerCol.includes('date_time') || 
+                           lowerCol === 'time';
+
+      let dateObj = null;
+
+      if (typeof val === 'string') {
+        const strVal = val.trim();
+        // Regex matching SQLite timestamp strings like "2026-08-24 05:46:12" or ISO strings
+        const isoMatch = strVal.match(/^(\d{4}-\d{2}-\d{2})[ T](\d{2}:\d{2}:\d{2})(\.\d+)?(Z|[+-]\d{2}:\d{2})?$/);
+        if (isoMatch) {
+          let isoFormatted = `${isoMatch[1]}T${isoMatch[2]}${isoMatch[3] || ''}`;
+          if (!isoMatch[4]) {
+            isoFormatted += 'Z'; // SQLite CURRENT_TIMESTAMP is UTC
+          } else {
+            isoFormatted += isoMatch[4];
+          }
+          const d = new Date(isoFormatted);
+          if (!isNaN(d.getTime())) {
+            dateObj = d;
+          }
+        } else if (isTimeColumn && !isNaN(Number(strVal))) {
+          const num = Number(strVal);
+          if (num > 1000000000) {
+            dateObj = new Date(num > 1e11 ? num : num * 1000);
+          }
+        }
+      } else if (typeof val === 'number') {
+        if (val > 1000000000) { // e.g. unix epoch timestamp in seconds/ms
+          dateObj = new Date(val > 1e11 ? val : val * 1000);
+        }
+      }
+
+      if (!dateObj || isNaN(dateObj.getTime())) {
+        return null;
+      }
+
+      // Convert UTC Date object to IST (UTC + 5 hours 30 mins)
+      const istOffsetMs = (5 * 60 + 30) * 60 * 1000;
+      const istDate = new Date(dateObj.getTime() + istOffsetMs);
+
+      const year = istDate.getUTCFullYear();
+      const month = String(istDate.getUTCMonth() + 1).padStart(2, '0');
+      const day = String(istDate.getUTCDate()).padStart(2, '0');
+      const hours = String(istDate.getUTCHours()).padStart(2, '0');
+      const minutes = String(istDate.getUTCMinutes()).padStart(2, '0');
+      const seconds = String(istDate.getUTCSeconds()).padStart(2, '0');
+
+      const formattedStr = `${year}-${month}-${day} ${hours}:${minutes}:${seconds}`;
+
+      return {
+        formatted: formattedStr,
+        fullText: `${formattedStr} IST`,
+        original: String(val)
+      };
+    }
+
+    function formatCellContent(colName, val, isPk) {
+      if (val === null || val === undefined) {
+        return `<span class="cell-null">NULL</span>`;
+      }
+
+      // Check for Timestamp & format to IST for web display
+      const istInfo = formatTimestampToIST(val, colName);
+      if (istInfo) {
+        return `
+          <span class="cell-ist-timestamp" title="Raw DB value (UTC): ${escapeHtml(istInfo.original)}">
+            <span>📅 ${escapeHtml(istInfo.formatted)}</span>
+            <span class="ist-badge">IST</span>
+          </span>
+        `;
+      }
+
+      // Check if string is valid JSON
+      if (typeof val === 'string' && (val.startsWith('{') || val.startsWith('['))) {
+        try {
+          const parsed = JSON.parse(val);
+          const jsonStr = JSON.stringify(parsed);
+          const encoded = encodeURIComponent(JSON.stringify(parsed, null, 2));
+          return `
+            <button class="cell-json-badge" onclick="openJsonModal('${colName}', '${encoded}')">
+              <span>{ }</span> Format JSON (${jsonStr.length} chars)
+            </button>
+          `;
+        } catch (e) {
+          // Not valid JSON, render as normal string
+        }
+      }
+
+      if (isPk) {
+        return `<span class="cell-pk">#${val}</span>`;
+      }
+
+      return escapeHtml(String(val));
+    }
+
+    function renderSchemaTable(columns) {
+      const contentArea = document.getElementById('content-area');
+      if (!columns || columns.length === 0) {
+        contentArea.innerHTML = `<div class="empty-state"><h3>No schema information available</h3></div>`;
+        return;
+      }
+
+      let html = `
+        <table class="schema-table">
+          <thead>
+            <tr>
+              <th>CID</th>
+              <th>Column Name</th>
+              <th>Data Type</th>
+              <th>Not Null</th>
+              <th>Default Value</th>
+              <th>Primary Key</th>
+            </tr>
+          </thead>
+          <tbody>
+      `;
+
+      columns.forEach(col => {
+        html += `
+          <tr>
+            <td><code>${col.cid}</code></td>
+            <td style="font-weight: 600; color: #818cf8;">${col.name}</td>
+            <td><code>${col.type}</code></td>
+            <td>${col.notnull ? '✅ Yes' : '❌ No'}</td>
+            <td><code>${col.dflt_value || 'NULL'}</code></td>
+            <td>${col.pk ? '🔑 Primary Key' : '-'}</td>
+          </tr>
+        `;
+      });
+
+      html += `</tbody></table>`;
+      contentArea.innerHTML = html;
+    }
+
+    function openJsonModal(colName, encodedJson) {
+      const rawJson = decodeURIComponent(encodedJson);
+      document.getElementById('modal-json-title').innerText = `Column: ${colName} (Formatted JSON)`;
+      document.getElementById('modal-json-content').innerText = rawJson;
+      document.getElementById('json-modal').classList.add('active');
+    }
+
+    function closeModal() {
+      document.getElementById('json-modal').classList.remove('active');
+    }
+
+    function escapeHtml(str) {
+      return str.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
+    }
+  </script>
+</body>
+</html>

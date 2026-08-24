@@ -89,6 +89,27 @@ def reasoning_page():
 def onboarding_page():
     return serve_html("onboarding.html")
 
+@app.get("/db-viewer", response_class=HTMLResponse)
+def db_viewer_page():
+    return serve_html("db_viewer.html")
+
+# --- Database Admin / Inspector API ---
+@app.get("/api/admin/db/tables")
+def get_admin_db_tables():
+    return {"tables": db.get_tables()}
+
+@app.get("/api/admin/db/table/{table_name}")
+def get_admin_db_table_data(
+    table_name: str,
+    limit: int = 100,
+    offset: int = 0,
+    search: Optional[str] = None
+):
+    result = db.get_table_data(table_name, limit=limit, offset=offset, search=search)
+    if "error" in result:
+        raise HTTPException(status_code=400, detail=result["error"])
+    return result
+
 # --- Authentication API ---
 @app.post("/api/auth/register", response_model=AuthResponse)
 def register(req: UserAuthRequest):

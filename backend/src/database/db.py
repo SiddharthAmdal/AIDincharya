@@ -296,5 +296,71 @@ def get_today_completions(user_id, date_str: Optional[str] = None) -> List[str]:
     conn.close()
     return [row["practice_name"] for row in rows]
 
+# --- Database Viewer / Admin Methods ---
+
+def get_tables() -> List[str]:
+    conn = get_db_connection()
+    c = conn.cursor()
+    c.execute("SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%';")
+    tables = [row["name"] for row in c.fetchall()]
+    conn.close()
+    return tables
+
+def get_table_schema(table_name: str) -> List[Dict[str, Any]]:
+    conn = get_db_connection()
+    c = conn.cursor()
+    c.execute(f"PRAGMA table_info({table_name});")
+    columns = [
+        {
+            "cid": row["cid"],
+            "name": row["name"],
+            "type": row["type"],
+            "notnull": row["notnull"],
+            "dflt_value": row["dflt_value"],
+            "pk": row["pk"]
+        }
+        for row in c.fetchall()
+    ]
+    conn.close()
+    return columns
+
+def get_table_data(table_name: str, limit: int = 100, offset: int = 0, search: Optional[str] = None) -> Dict[str, Any]:
+    tables = get_tables()
+    if table_name not in tables:
+        return {"error": "Invalid table name", "columns": [], "rows": [], "total": 0}
+    
+    conn = get_db_connection()
+    c = conn.cursor()
+    
+    schema = get_table_schema(table_name)
+    col_names = [col["name"] for col in schema]
+    
+    where_clause = ""
+    params: list = []
+    if search:
+        search_like = f"%{search}%"
+        conditions = [f"CAST({col} AS TEXT) LIKE ?" for col in col_names]
+        where_clause = " WHERE " + " OR ".join(conditions)
+        params = [search_like] * len(col_names)
+        
+    count_query = f"SELECT COUNT(*) as count FROM {table_name}" + where_clause
+    c.execute(count_query, params)
+    total_count = c.fetchone()["count"]
+    
+    data_query = f"SELECT * FROM {table_name}" + where_clause + " ORDER BY 1 DESC LIMIT ? OFFSET ?"
+    c.execute(data_query, params + [limit, offset])
+    rows = [dict(row) for row in c.fetchall()]
+    
+    conn.close()
+    return {
+        "table_name": table_name,
+        "columns": schema,
+        "rows": rows,
+        "total": total_count,
+        "limit": limit,
+        "offset": offset
+    }
+
 # Initialize on import
 init_db()
+
