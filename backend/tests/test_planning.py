@@ -184,3 +184,12 @@ def test_chat_safety_recalibration_with_fever():
     
     # Abhyanga should be stripped because of fever
     assert not any("abhyanga" in p.name.lower() for p in validated.morning_block)
+
+
+def test_gemini_provider_initialization():
+    """Verify that build_llm_client correctly initializes Google AI Studio Gemini endpoint."""
+    from src.llm_client import build_llm_client
+    client = build_llm_client(provider="gemini", gemini_api_key="AIzaSyTestApiKeySample")
+    assert "generativelanguage.googleapis.com" in str(client.base_url)
+    assert client.api_key == "AIzaSyTestApiKeySample"
+

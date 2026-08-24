@@ -520,10 +520,12 @@ def chat_assistant(request: ChatRequest, user_id: int = Depends(get_current_user
         messages.append({"role": "user", "content": request.message})
 
         try:
-            chat_completion = planner.openai_client.chat.completions.create(messages=messages, model=DEFAULT_MODEL, temperature=0.7, max_tokens=300)
-            full_response = chat_completion.choices[0].message.content
+            chat_completion = planner.openai_client.chat.completions.create(messages=messages, model=DEFAULT_MODEL, temperature=0.7, max_tokens=1000)
+            full_response = chat_completion.choices[0].message.content or ""
+            if not full_response.strip():
+                raise ValueError("LLM returned empty message content")
         except Exception as llm_err:
-            logger.warning(f"LLM chat call failed ({llm_err}). Using RAG knowledge fallback response.")
+            logger.error(f"LLM chat call failed ({llm_err}). Using RAG knowledge fallback response.")
             top_guidelines = "\n".join([f"• {g['text'].strip()}" for g in guidelines[:2]])
             dom_dosha = max([("Vata", profile.prakriti.vata), ("Pitta", profile.prakriti.pitta), ("Kapha", profile.prakriti.kapha)], key=lambda x: x[1])[0]
             full_response = (
