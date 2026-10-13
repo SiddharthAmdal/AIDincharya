@@ -518,6 +518,25 @@ def remote_log(req: Dict[str, Any]):
     return {"status": "ok"}
 
 
+def find_unused_port(start_port: int = 8000) -> int:
+    import socket
+    port = start_port
+    while True:
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+            try:
+                s.bind(("0.0.0.0", port))
+                return port
+            except OSError:
+                port += 1
+
+
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run("main:app", host="0.0.0.0", port=8000, reload=DEBUG)
+    port_env = os.getenv("PORT")
+    if port_env:
+        port = int(port_env)
+    else:
+        port = find_unused_port(8000)
+    print(f"Starting server on port {port}...")
+    uvicorn.run("main:app", host="0.0.0.0", port=port, reload=DEBUG)
+

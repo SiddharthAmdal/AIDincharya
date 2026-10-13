@@ -1,8 +1,9 @@
+import os
 import requests
 import json
 import time
 
-BASE_URL = "http://localhost:8000"
+BASE_URL = f"http://localhost:{os.getenv('PORT', '8000')}"
 
 print("1. Registering user...")
 res = requests.post(f"{BASE_URL}/api/auth/register", json={"username": "testuser_" + str(time.time()), "password": "password"})
