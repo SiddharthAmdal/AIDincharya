@@ -1,8 +1,8 @@
+import os
 import time
-
 import requests
 
-BASE_URL = "http://localhost:8000"
+BASE_URL = f"http://localhost:{os.getenv('PORT', '8000')}"
 res = requests.post(f"{BASE_URL}/api/auth/register", json={"username": "testuser_3_" + str(time.time()), "password": "password"})
 token = res.json()["token"]
 headers = {"Authorization": f"Bearer {token}"}
