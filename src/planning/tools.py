@@ -140,6 +140,257 @@ def get_current_schedule(user_id: str) -> Dict[str, Any]:
         return {"error": str(exc), "schedule": {}}
 
 
+def get_user_profile(user_id: str) -> Dict[str, Any]:
+    """
+    Retrieves the user's computed Ayurvedic profile, dosha vectors, and vikriti flags.
+    """
+    try:
+        uid_int = int(user_id)
+        state = db.get_user_state(uid_int)
+        if not state:
+            return {"user_id": user_id, "error": "User state not found"}
+        
+        q_resp = state.get("questionnaire_responses", {})
+        telemetry = state.get("telemetry_baselines", {})
+        vikriti = state.get("current_vikriti", {})
+        symptoms = vikriti.get("symptoms", []) if isinstance(vikriti, dict) else []
+        
+        from src.perception.dosha_mapper import DoshaMapper
+        profile = DoshaMapper.generate_profile(
+            user_id=user_id,
+            questionnaire=q_resp,
+            telemetry=telemetry,
+            symptoms={"self_reported": " ".join(symptoms)} if symptoms else None
+        )
+        return {
+            "user_id": user_id,
+            "has_completed_onboarding": state.get("has_completed_onboarding", False),
+            "adherence_score": state.get("adherence_score", 1.0),
+            "prakriti": profile.prakriti.model_dump(),
+            "vikriti_flags": profile.vikriti_flags.model_dump(),
+            "symptoms": symptoms
+        }
+    except Exception as exc:
+        logger.error(f"Error fetching profile for user {user_id}: {exc}")
+        return {"user_id": user_id, "error": str(exc)}
+
+
+def get_adherence_history(user_id: str) -> Dict[str, Any]:
+    """
+    Retrieves the user's adherence tracking history, rolling score, and recommended complexity.
+    """
+    try:
+        uid_int = int(user_id)
+        state = db.get_user_state(uid_int)
+        score = float(state.get("adherence_score", 1.0))
+        completions = db.get_today_completions(uid_int)
+        from src.behavior.tracker import AdherenceTracker
+        complexity = AdherenceTracker.determine_complexity(score)
+        nudge = AdherenceTracker.generate_behavior_nudge(score)
+        return {
+            "user_id": user_id,
+            "adherence_score": score,
+            "recommended_complexity": complexity,
+            "today_completions": completions,
+            "behavioral_nudge": nudge
+        }
+    except Exception as exc:
+        logger.error(f"Error reading adherence history for user {user_id}: {exc}")
+        return {"user_id": user_id, "error": str(exc)}
+
+
+def validate_clinical_safety(
+    user_id: str,
+    candidate_schedule: Optional[Dict[str, Any]] = None,
+    symptoms: Optional[List[str]] = None
+) -> Dict[str, Any]:
+    """
+    Validates a schedule against classical Ayurvedic contraindication rules independently of the LLM.
+    """
+    try:
+        uid_int = int(user_id)
+        state = db.get_user_state(uid_int)
+        from src.perception.dosha_mapper import DoshaMapper
+        from src.safety.guardrails import ClinicalRuleEngine
+        from src.models import Practice, DinacharyaSchedule
+        
+        q_resp = state.get("questionnaire_responses", {})
+        telemetry = dict(state.get("telemetry_baselines", {}))
+        vikriti = state.get("current_vikriti", {})
+        active_symptoms = list(symptoms or [])
+        if isinstance(vikriti, dict):
+            active_symptoms.extend(vikriti.get("symptoms", []))
+            telemetry.update(vikriti.get("telemetry", {}))
+        
+        symptoms_map = {f"sym_{i}": s for i, s in enumerate(active_symptoms)} if active_symptoms else None
+        profile = DoshaMapper.generate_profile(user_id, q_resp, telemetry, symptoms=symptoms_map)
+        
+        sched_data = candidate_schedule or state.get("last_schedule")
+        if not sched_data or not isinstance(sched_data, dict):
+            return {"is_safe": True, "message": "No active schedule to validate.", "overrides_applied": []}
+
+        morning = [Practice(**p) if isinstance(p, dict) else p for p in sched_data.get("morning_block", [])]
+        midday = [Practice(**p) if isinstance(p, dict) else p for p in sched_data.get("midday_block", [])]
+        evening = [Practice(**p) if isinstance(p, dict) else p for p in sched_data.get("evening_block", [])]
+
+        sched_obj = DinacharyaSchedule(
+            user_id=user_id,
+            adherence_score=state.get("adherence_score", 1.0),
+            routine_complexity="Moderate",
+            morning_block=morning,
+            midday_block=midday,
+            evening_block=evening,
+            timestamp=time.time()
+        )
+        eval_result = ClinicalRuleEngine.evaluate_safety(sched_obj, profile, symptoms=active_symptoms)
+        return {
+            "is_safe": eval_result["is_safe"],
+            "overrides_applied": eval_result["overrides_applied"],
+            "rules_checked": eval_result["rules_checked"],
+            "validated_schedule": eval_result["schedule"].model_dump()
+        }
+    except Exception as exc:
+        logger.error(f"Error running safety validation for user {user_id}: {exc}")
+        return {"is_safe": False, "error": str(exc), "overrides_applied": []}
+
+
+def persist_schedule_adaptation(
+    user_id: str,
+    schedule: Dict[str, Any],
+    date_str: Optional[str] = None
+) -> Dict[str, Any]:
+    """
+    Persists a confirmed schedule adaptation after executing mandatory safety validation.
+    Enforces canonical persistence format: {"schedule": ..., "dosha_profile": ...}.
+    """
+    try:
+        uid_int = int(user_id)
+        from src.planning.schedule_service import mutate_user_schedule
+
+        # 1. Try to extract update pairs from any format the LLM emits
+        updates = {}
+        for block_key in ["morning_block", "midday_block", "evening_block"]:
+            block_data = schedule.get(block_key, [])
+            if isinstance(block_data, dict):
+                for k, v in block_data.items():
+                    # Handle {"20:00 - 20:30": "Light Early Dinner"} vs {"Light Early Dinner": "20:00 - 20:30"}
+                    if any(c in str(k) for c in [":", "-"]) and not any(c in str(v) for c in [":", "-"]):
+                        updates[str(v)] = str(k)
+                    else:
+                        updates[str(k)] = str(v)
+            elif isinstance(block_data, list):
+                for item in block_data:
+                    if isinstance(item, dict) and "name" in item and "time_slot" in item:
+                        updates[item["name"]] = item["time_slot"]
+
+        if updates:
+            mut_res = mutate_user_schedule(uid_int, updates, date_str=date_str)
+            if mut_res.get("success"):
+                return {
+                    "success": True,
+                    "user_id": user_id,
+                    "persisted_date": mut_res["persisted_date"],
+                    "schedule": mut_res["schedule"]
+                }
+
+        # 2. Fallback: Parse explicit schedule blocks and persist into canonical format
+        state = db.get_user_state(uid_int)
+        from src.perception.dosha_mapper import DoshaMapper
+        from src.safety.guardrails import ClinicalRuleEngine
+        from src.models import Practice, DinacharyaSchedule
+        from src.planning.agent import standardize_slot
+
+        q_resp = state.get("questionnaire_responses", {})
+        telemetry = dict(state.get("telemetry_baselines", {}))
+        vikriti = state.get("current_vikriti", {})
+        active_symptoms = []
+        if isinstance(vikriti, dict):
+            active_symptoms.extend(vikriti.get("symptoms", []))
+            telemetry.update(vikriti.get("telemetry", {}))
+
+        symptoms_map = {f"sym_{i}": s for i, s in enumerate(active_symptoms)} if active_symptoms else None
+        profile = DoshaMapper.generate_profile(user_id, q_resp, telemetry, symptoms=symptoms_map)
+
+        def parse_safe_block(raw_val):
+            out = []
+            if isinstance(raw_val, dict):
+                for k, v in raw_val.items():
+                    slot = k if any(c in str(k) for c in [":", "-"]) else v
+                    name = v if slot == k else k
+                    out.append(Practice(
+                        name=str(name),
+                        time_slot=standardize_slot(str(slot)),
+                        duration_minutes=15,
+                        description="",
+                        rationale=""
+                    ))
+            elif isinstance(raw_val, list):
+                for p in raw_val:
+                    if isinstance(p, Practice):
+                        out.append(p)
+                    elif isinstance(p, dict):
+                        out.append(Practice(
+                            name=p.get("name", "Practice"),
+                            time_slot=standardize_slot(p.get("time_slot", "Flexible")),
+                            duration_minutes=int(p.get("duration_minutes", 15)),
+                            description=p.get("description", ""),
+                            rationale=p.get("rationale", "")
+                        ))
+                    elif isinstance(p, str):
+                        out.append(Practice(
+                            name=p,
+                            time_slot="Flexible",
+                            duration_minutes=15,
+                            description="",
+                            rationale=""
+                        ))
+            return out
+
+        sched_obj = DinacharyaSchedule(
+            user_id=user_id,
+            adherence_score=state.get("adherence_score", 1.0),
+            routine_complexity="Moderate",
+            morning_block=parse_safe_block(schedule.get("morning_block")),
+            midday_block=parse_safe_block(schedule.get("midday_block")),
+            evening_block=parse_safe_block(schedule.get("evening_block")),
+            timestamp=time.time()
+        )
+        eval_result = ClinicalRuleEngine.evaluate_safety(sched_obj, profile, symptoms=active_symptoms)
+        validated_dict = eval_result["schedule"].model_dump()
+
+        target_date = date_str or time.strftime("%Y-%m-%d")
+        canonical_data = {
+            "schedule": validated_dict,
+            "morning_block": validated_dict.get("morning_block", []),
+            "midday_block": validated_dict.get("midday_block", []),
+            "evening_block": validated_dict.get("evening_block", []),
+            "dosha_profile": profile.model_dump(),
+            "complexity_level": sched_obj.routine_complexity,
+            "timestamp": time.time()
+        }
+        db.save_user_schedule(uid_int, canonical_data, target_date)
+
+        idemp_key = f"adapt-persist-{uid_int}-{target_date}-{int(time.time() // 60)}"
+        db.create_notification(
+            user_id=uid_int,
+            event_type="adaptation_confirmed",
+            message=f"Your adapted routine for {target_date} has been confirmed and saved.",
+            severity="info",
+            channel="in_app",
+            idempotency_key=idemp_key
+        )
+
+        return {
+            "success": True,
+            "user_id": user_id,
+            "persisted_date": target_date,
+            "schedule": validated_dict
+        }
+    except Exception as exc:
+        logger.error(f"Error persisting adapted schedule for user {user_id}: {exc}")
+        return {"success": False, "error": str(exc)}
+
+
 def request_user_notification(
     user_id: str,
     event_type: str,
@@ -186,19 +437,29 @@ def propose_schedule_adaptation(
 ) -> Dict[str, Any]:
     """
     Validates a proposed schedule adaptation against safety rules before committing.
+    Enforces that proposals require explicit user confirmation before mutating vault state.
     """
     valid_change_types = {"reschedule", "skip", "shorten", "substitute"}
     if change_type not in valid_change_types:
         return {"valid": False, "error": f"Invalid change_type '{change_type}'. Must be one of {valid_change_types}"}
 
+    from src.planning.agent import standardize_slot
+    std_slot = standardize_slot(new_slot) if new_slot else None
+
     return {
         "valid": True,
+        "proposal_status": "pending_user_confirmation",
         "user_id": user_id,
         "change_type": change_type,
         "affected_activity": affected_activity,
-        "new_slot": new_slot,
+        "proposed_slot": std_slot,
         "rationale": rationale,
-        "safety_checked": True
+        "safety_checked": True,
+        "instruction": (
+            f"Present this proposed schedule adjustment to the user for explicit confirmation. "
+            f"Do NOT claim the change is already persisted or updated. "
+            f"Ask the user: 'I propose moving {affected_activity} to {std_slot}. Would you like me to confirm and update your daily routine?'"
+        )
     }
 
 
@@ -208,15 +469,55 @@ AVAILABLE_PLANNER_TOOLS: List[Dict[str, Any]] = [
     {
         "type": "function",
         "function": {
+            "name": "get_user_profile",
+            "description": "Retrieves the user's computed Ayurvedic phenotype (Prakriti), current health deviations (Vikriti), and active symptoms.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "user_id": {"type": "string", "description": "The unique ID of the user."}
+                },
+                "required": ["user_id"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "query_ayurvedic_knowledge",
+            "description": "Retrieves classical Ayurvedic guidelines and recommendations from the RAG knowledge base for specific doshas, symptoms, or seasons.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "dosha": {"type": "string", "description": "Dominant or aggravated dosha: 'Vata', 'Pitta', or 'Kapha'."},
+                    "symptom": {"type": "string", "description": "Self-reported symptom such as 'fatigue', 'insomnia', 'fever', 'stress'."},
+                    "season": {"type": "string", "description": "Current season: 'Vasanta' (Spring), 'Grishma' (Summer), 'Varsha' (Monsoon), 'Sharad' (Autumn), 'Hemanta' (Winter)."}
+                }
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "get_current_schedule",
+            "description": "Fetches the current active Dinacharya schedule and routines for a user.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "user_id": {"type": "string", "description": "The unique ID of the user."}
+                },
+                "required": ["user_id"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
             "name": "check_calendar_conflicts",
             "description": "Checks whether a proposed time slot conflicts with existing calendar commitments or meetings.",
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "candidate_time_slot": {
-                        "type": "string",
-                        "description": "The proposed time window, e.g. '07:00 - 07:30' or '08:00 - 09:00'."
-                    },
+                    "candidate_time_slot": {"type": "string", "description": "The proposed time window, e.g. '07:00 - 07:30' or '08:00 - 09:00'."},
                     "calendar_events": {
                         "type": "array",
                         "items": {"type": "string"},
@@ -230,39 +531,61 @@ AVAILABLE_PLANNER_TOOLS: List[Dict[str, Any]] = [
     {
         "type": "function",
         "function": {
-            "name": "query_ayurvedic_knowledge",
-            "description": "Retrieves classical Ayurvedic guidelines and recommendations from the RAG knowledge base for specific doshas, symptoms, or seasons.",
+            "name": "propose_schedule_adaptation",
+            "description": "Generates a structured schedule adaptation proposal (e.g. rescheduling an activity) for user confirmation.",
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "dosha": {
-                        "type": "string",
-                        "description": "Dominant or aggravated dosha: 'Vata', 'Pitta', or 'Kapha'."
-                    },
-                    "symptom": {
-                        "type": "string",
-                        "description": "Self-reported symptom such as 'fatigue', 'insomnia', 'fever', 'stress'."
-                    },
-                    "season": {
-                        "type": "string",
-                        "description": "Current season: 'Vasanta' (Spring), 'Grishma' (Summer), 'Varsha' (Monsoon), 'Sharad' (Autumn), 'Hemanta' (Winter)."
-                    }
-                }
+                    "user_id": {"type": "string", "description": "User ID."},
+                    "change_type": {"type": "string", "enum": ["reschedule", "skip", "shorten", "substitute"], "description": "Type of schedule change."},
+                    "affected_activity": {"type": "string", "description": "Name of the activity being adapted."},
+                    "new_slot": {"type": "string", "description": "New proposed time slot (e.g. '21:00 - 21:30')."},
+                    "rationale": {"type": "string", "description": "Ayurvedic and logistical justification."}
+                },
+                "required": ["user_id", "change_type", "affected_activity"]
             }
         }
     },
     {
         "type": "function",
         "function": {
-            "name": "get_current_schedule",
-            "description": "Fetches the current active Dinacharya schedule and routines for a user.",
+            "name": "validate_clinical_safety",
+            "description": "Validates a candidate or modified schedule against deterministic Ayurvedic contraindication rules.",
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "user_id": {
-                        "type": "string",
-                        "description": "The unique ID of the user."
-                    }
+                    "user_id": {"type": "string", "description": "User ID."},
+                    "symptoms": {"type": "array", "items": {"type": "string"}, "description": "Active symptoms to check contraindications for."}
+                },
+                "required": ["user_id"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "persist_schedule_adaptation",
+            "description": "Saves a confirmed schedule adaptation into persistent storage and triggers an in-app confirmation notification.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "user_id": {"type": "string", "description": "User ID."},
+                    "schedule": {"type": "object", "description": "The complete validated schedule dictionary to persist."},
+                    "date_str": {"type": "string", "description": "Optional date string 'YYYY-MM-DD'."}
+                },
+                "required": ["user_id", "schedule"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "get_adherence_history",
+            "description": "Reads the user's completion records, current adherence score, and behavioral recommendations.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "user_id": {"type": "string", "description": "User ID."}
                 },
                 "required": ["user_id"]
             }
@@ -293,23 +616,22 @@ AVAILABLE_PLANNER_TOOLS: List[Dict[str, Any]] = [
 def execute_planner_tool(tool_name: str, args: Dict[str, Any], caller_user_id: Optional[str] = None) -> str:
     """
     Safely executes an authorized planner tool and returns a JSON string response.
-    Never executes arbitrary or unvetted actions.
+    Enforces user authorization and input validation.
     """
     try:
         # Permission check: ensure user_id in args does not impersonate another user
-        if caller_user_id and "user_id" in args:
-            if str(args["user_id"]) != str(caller_user_id):
-                return json.dumps({"error": "Permission denied: user_id mismatch with authenticated context."})
+        if caller_user_id:
+            raw_arg_uid = str(args.get("user_id", "")).strip().lower()
+            if raw_arg_uid in ("", "current_user", "me", "self", "authenticated_user"):
+                args["user_id"] = str(caller_user_id)
+            elif "user_id" in args and str(args["user_id"]) != str(caller_user_id):
+                return json.dumps({"error": f"Permission denied: user_id '{args['user_id']}' mismatch with authenticated context '{caller_user_id}'."})
 
-        if tool_name == "check_calendar_conflicts":
-            events = args.get("calendar_events", [])
-            slot = args.get("candidate_time_slot", "")
-            has_conflict = check_calendar_conflicts(events, slot)
-            return json.dumps({
-                "candidate_time_slot": slot,
-                "has_conflict": has_conflict,
-                "conflicting_events": [e for e in events if check_calendar_conflicts([e], slot)] if has_conflict else []
-            })
+        effective_user_id = str(caller_user_id or args.get("user_id") or "1")
+
+        if tool_name == "get_user_profile":
+            profile_data = get_user_profile(effective_user_id)
+            return json.dumps(profile_data)
 
         elif tool_name == "query_ayurvedic_knowledge":
             guidelines = query_ayurvedic_knowledge(
@@ -321,29 +643,59 @@ def execute_planner_tool(tool_name: str, args: Dict[str, Any], caller_user_id: O
             return json.dumps({"retrieved_guidelines": guidelines})
 
         elif tool_name == "get_current_schedule":
-            sched = get_current_schedule(str(args.get("user_id", caller_user_id or "1")))
+            sched = get_current_schedule(effective_user_id)
             return json.dumps(sched)
 
+        elif tool_name == "check_calendar_conflicts":
+            events = args.get("calendar_events", [])
+            slot = args.get("candidate_time_slot", "")
+            has_conflict = check_calendar_conflicts(events, slot)
+            return json.dumps({
+                "candidate_time_slot": slot,
+                "has_conflict": has_conflict,
+                "conflicting_events": [e for e in events if check_calendar_conflicts([e], slot)] if has_conflict else []
+            })
+
+        elif tool_name == "propose_schedule_adaptation":
+            res = propose_schedule_adaptation(
+                user_id=effective_user_id,
+                change_type=args.get("change_type", "reschedule"),
+                affected_activity=args.get("affected_activity", ""),
+                new_slot=args.get("new_slot"),
+                rationale=args.get("rationale", "")
+            )
+            return json.dumps(res)
+
+        elif tool_name == "validate_clinical_safety":
+            res = validate_clinical_safety(
+                user_id=effective_user_id,
+                candidate_schedule=args.get("candidate_schedule"),
+                symptoms=args.get("symptoms")
+            )
+            return json.dumps(res)
+
+        elif tool_name == "persist_schedule_adaptation":
+            sched_to_save = args.get("schedule", {})
+            res = persist_schedule_adaptation(
+                user_id=effective_user_id,
+                schedule=sched_to_save,
+                date_str=args.get("date_str")
+            )
+            return json.dumps(res)
+
+        elif tool_name == "get_adherence_history":
+            res = get_adherence_history(effective_user_id)
+            return json.dumps(res)
+
         elif tool_name == "request_user_notification":
-            user_id = str(args.get("user_id", caller_user_id or "1"))
             res = request_user_notification(
-                user_id=user_id,
+                user_id=effective_user_id,
                 event_type=args.get("event_type", "reschedule"),
                 message=args.get("message", "Your schedule has been adapted."),
                 activity_name=args.get("activity_name"),
                 new_time_slot=args.get("new_time_slot"),
                 severity=args.get("severity", "info"),
-                idempotency_key=f"tool-{user_id}-{args.get('event_type')}-{args.get('activity_name')}-{time.strftime('%Y%m%d%H%M')}"
-            )
-            return json.dumps(res)
-
-        elif tool_name == "propose_schedule_adaptation":
-            res = propose_schedule_adaptation(
-                user_id=str(args.get("user_id", caller_user_id or "1")),
-                change_type=args.get("change_type", "reschedule"),
-                affected_activity=args.get("affected_activity", ""),
-                new_slot=args.get("new_slot"),
-                rationale=args.get("rationale", "")
+                idempotency_key=f"tool-{effective_user_id}-{args.get('event_type')}-{args.get('activity_name')}-{time.strftime('%Y%m%d%H%M')}"
             )
             return json.dumps(res)
 

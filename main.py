@@ -22,21 +22,37 @@ from src.behavior.tracker import AdherenceTracker
 from src.planning.agent import DinacharyaPlannerAgent
 from src.safety.guardrails import ClinicalRuleEngine
 from src.knowledge.retriever import AyurvedaKnowledgeBase
-from src.config import APP_NAME, DEBUG, DEFAULT_MODEL
+from src.config import APP_NAME, DEBUG, DEFAULT_MODEL, validate_config
 from src.llm_gateway import LLMGateway
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("AiDincharya")
 
+# Validate configuration on startup
+config_status = validate_config(strict=False)
+if not config_status["valid"]:
+    logger.warning(f"Startup configuration warnings: {config_status['issues']}")
+
 app = FastAPI(title=APP_NAME)
 
-# CORS
+# CORS with explicit configurable allowlist (prevents wildcard with credentials)
+cors_origins_env = os.getenv("CORS_ORIGINS", "")
+if cors_origins_env:
+    allowed_origins = [orig.strip() for orig in cors_origins_env.split(",") if orig.strip()]
+else:
+    allowed_origins = [
+        "http://localhost:8000",
+        "http://127.0.0.1:8000",
+        "http://localhost:8001",
+        "http://127.0.0.1:8001",
+    ]
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=allowed_origins,
     allow_credentials=True,
-    allow_methods=["*"],
+    allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
     allow_headers=["*"],
 )
 
@@ -91,8 +107,7 @@ def onboarding_page():
 # --- Authentication API ---
 @app.post("/api/auth/register", response_model=AuthResponse)
 def register(req: UserAuthRequest):
-    pwd_hash = hashlib.sha256(req.password.encode()).hexdigest()
-    user_id = db.create_user(req.username, pwd_hash)
+    user_id = db.create_user(req.username, req.password)
     if not user_id:
         raise HTTPException(status_code=400, detail="Username already exists")
     token = db.create_session(user_id)
@@ -100,13 +115,29 @@ def register(req: UserAuthRequest):
 
 @app.post("/api/auth/login", response_model=AuthResponse)
 def login(req: UserAuthRequest):
-    pwd_hash = hashlib.sha256(req.password.encode()).hexdigest()
-    user_id = db.authenticate_user(req.username, pwd_hash)
+    user_id = db.authenticate_user(req.username, req.password)
     if not user_id:
         raise HTTPException(status_code=401, detail="Invalid credentials")
     token = db.create_session(user_id)
     state = db.get_user_state(user_id)
     return {"token": token, "has_completed_onboarding": state.get("has_completed_onboarding", False)}
+
+@app.post("/api/auth/logout")
+def logout(authorization: Optional[str] = Header(None)):
+    if not authorization or not authorization.startswith("Bearer "):
+        raise HTTPException(status_code=401, detail="Unauthorized")
+    token = authorization.split(" ")[1]
+    revoked = db.revoke_session(token)
+    if not revoked:
+        raise HTTPException(status_code=400, detail="Could not revoke session")
+    return {"status": "success", "message": "Logged out successfully"}
+
+@app.post("/remote_log")
+@app.post("/api/log")
+def remote_log(payload: Dict[str, Any]):
+    """Receives client-side diagnostic and error telemetry."""
+    logger.info(f"[RemoteLog] {payload}")
+    return {"status": "logged"}
 
 @app.post("/api/user/questionnaire")
 def save_questionnaire(req: QuestionnaireRequest, user_id: int = Depends(get_current_user)):
@@ -153,20 +184,19 @@ def generate_schedule(request: ScheduleGenerateRequest, user_id: int = Depends(g
         # --- Smart Daily Logic ---
         today_date = datetime.now().strftime('%Y-%m-%d')
         cached_sched = state.get("last_schedule")
-        
         force_regen = getattr(request, "force_regen", False) or False
         
-        # A. Check if user already has a valid persisted schedule for today
-        has_valid_today_schedule = (
+        # A. Check if user already has a valid persisted schedule
+        has_valid_persisted_schedule = (
             cached_sched is not None 
             and isinstance(cached_sched, dict) 
-            and "schedule" in cached_sched 
-            and "dosha_profile" in cached_sched
-            and state.get("schedule_date") == today_date
+            and "schedule" in cached_sched
         )
 
-        if not force_regen and not request.questionnaire_responses and has_valid_today_schedule:
+        if not force_regen and not request.questionnaire_responses and has_valid_persisted_schedule:
             logger.info(f"Serving stable persisted schedule for user {user_id}")
+            if state.get("schedule_date") != today_date:
+                db.save_user_schedule(user_id, cached_sched, today_date)
             return cached_sched
 
         logger.info(f"Generating/Compensating routine for user {user_id}...")
@@ -226,16 +256,18 @@ def generate_schedule(request: ScheduleGenerateRequest, user_id: int = Depends(g
 @app.get("/api/schedule/current", response_model=Dict[str, Any])
 def get_current_schedule(user_id: int = Depends(get_current_user)):
     """
-    Retrieves the current canonical persisted schedule for today directly from the database.
+    Retrieves the current canonical persisted schedule directly from the database.
     Sub-millisecond latency. Does not trigger live LLM generation.
+    Carries forward valid persisted schedules across days automatically.
     """
     state = db.get_user_state(user_id)
     today_date = datetime.now().strftime('%Y-%m-%d')
     cached_sched = state.get("last_schedule")
     
     if cached_sched and isinstance(cached_sched, dict) and "schedule" in cached_sched:
-        if state.get("schedule_date") == today_date or not state.get("schedule_date"):
-            return cached_sched
+        if state.get("schedule_date") != today_date:
+            db.save_user_schedule(user_id, cached_sched, today_date)
+        return cached_sched
             
     return {"schedule": None, "message": "No routine scheduled for today"}
 
@@ -385,15 +417,20 @@ def chat_assistant(request: ChatRequest, user_id: int = Depends(get_current_user
             "You are a warm, wise traditional Ayurvedic physician (Vaidya).\n\n"
             "YOUR CONTEXT:\n"
             f"- SYSTEM CLOCK: The current time is {time.strftime('%Y-%m-%d %H:%M:%S')}.\n"
-            "- WELLNESS VAULT: Access to user's Assessment Data and Daily Schedule history.\n\n"
+            f"- AUTHENTICATED USER ID: {user_id}\n"
+            "- WELLNESS VAULT: Access to user's Assessment Data, Adherence History, and Daily Schedule history.\n\n"
             f"{q_text}\n"
             f"{routine_summary}\n"
             "AUTHENTIC AYURVEDIC KNOWLEDGE BASE:\n" + guidelines_text +
-            "\n\nINSTRUCTIONS:\n"
+            "\n\nINSTRUCTIONS & PROTOCOLS:\n"
             "1. Use Markdown (**bold**, - lists) for clear clinical formatting.\n"
             "2. Reference specific assessment answers and current tasks.\n"
-            "3. CRITICAL: If the user requests a timing change or routine adjustment, "
-            "you MUST include the hidden tag [RECALIBRATE] at the end. This signals the Planner Agent.\n"
+            "3. ADAPTATION & CONFIRMATION PROTOCOL:\n"
+            "   - When a user asks to change, reschedule, move, or adjust an activity time, formulate a clear proposal.\n"
+            "   - State clearly: 'I propose moving [Activity Name] from [Old Time] to [New Time]. Would you like me to confirm and update your daily routine?'\n"
+            "   - Do NOT claim that the schedule has already been updated, synchronized, or rescheduled. It is ONLY updated after the user explicitly confirms (e.g. 'yes', 'confirm', 'apply').\n"
+            "   - NEVER reschedule or modify unrelated activities (such as Trataka / Reflection) unless the user specifically asked for them.\n"
+            "   - Append the tag [RECALIBRATE] at the very end of your proposal.\n"
             "4. Keep response under 3 concise, empathetic paragraphs."
         )
 
@@ -405,12 +442,17 @@ def chat_assistant(request: ChatRequest, user_id: int = Depends(get_current_user
         db.save_chat_message(user_id, "user", request.message)
         messages.append({"role": "user", "content": request.message})
 
-        # Check if user message is an explicit acceptance of a prior proposal
+        # Check if user message is an explicit acceptance or rejection of a prior proposal
         user_msg_lower = request.message.lower().strip()
         is_acceptance = any(term in user_msg_lower for term in [
             "accept", "apply", "confirm", "yes, please", "yes please", "please do", 
             "make the change", "update it", "looks good", "sounds good"
         ]) or (user_msg_lower in ["yes", "y", "sure", "ok", "okay", "agreed", "done"])
+
+        is_rejection = any(term in user_msg_lower for term in [
+            "reject", "decline", "cancel", "no, don't", "no dont", "keep my original", 
+            "keep original", "don't change", "dont change", "leave it", "keep as is"
+        ]) or (user_msg_lower in ["no", "n", "nope", "nevermind"])
 
         last_assistant_msg = ""
         for turn in reversed(db_history):
@@ -418,11 +460,25 @@ def chat_assistant(request: ChatRequest, user_id: int = Depends(get_current_user
                 last_assistant_msg = turn.get("content", "")
                 break
 
+        # Rejection handling: leave schedule untouched
+        if is_rejection and last_assistant_msg:
+            reject_text = (
+                "Understood. I have discarded the proposed adjustment. Your daily routine remains completely unchanged "
+                "and preserved in your persistent vault. Let me know if you would like any other assistance! 🙏"
+            )
+            db.save_chat_message(user_id, "assistant", reject_text)
+            return {
+                "response": reject_text,
+                "proposed_schedule": None,
+                "schedule_updated": False,
+                "timestamp": time.time()
+            }
+
         cached_sched = state.get("last_schedule")
         today_date = datetime.now().strftime('%Y-%m-%d')
         
         # If user is accepting an existing proposal
-        if is_acceptance and last_assistant_msg and cached_sched and isinstance(cached_sched, dict) and "schedule" in cached_sched:
+        if is_acceptance and cached_sched and isinstance(cached_sched, dict) and "schedule" in cached_sched:
             sched_root = cached_sched["schedule"]
             all_practices = (
                 sched_root.get("morning_block", []) +
@@ -430,69 +486,35 @@ def chat_assistant(request: ChatRequest, user_id: int = Depends(get_current_user
                 sched_root.get("evening_block", [])
             )
             p_names = [p.get("name", "") if isinstance(p, dict) else p.name for p in all_practices]
-            from src.planning.agent import extract_practice_time_updates, standardize_slot
-            updates = extract_practice_time_updates(last_assistant_msg, p_names)
+            from src.planning.agent import extract_practice_time_updates
+            from src.planning.schedule_service import mutate_user_schedule
+            
+            updates = {}
+            for turn in reversed(db_history):
+                if turn.get("role") == "assistant":
+                    extracted = extract_practice_time_updates(turn.get("content", ""), p_names)
+                    if extracted:
+                        updates = extracted
+                        last_assistant_msg = turn.get("content", "")
+                        break
             
             if updates:
-                try:
-                    from src.models import DinacharyaSchedule, Practice
-                    from src.safety.guardrails import ClinicalRuleEngine
-                    
-                    def clone_block(raw_block):
-                        res = []
-                        for item in raw_block:
-                            p_dict = item if isinstance(item, dict) else item.model_dump()
-                            p_name = p_dict.get("name", "")
-                            p_slot = updates.get(p_name, p_dict.get("time_slot", "Flexible"))
-                            res.append(Practice(
-                                name=p_name,
-                                time_slot=standardize_slot(p_slot),
-                                duration_minutes=int(p_dict.get("duration_minutes", 15)),
-                                description=p_dict.get("description", ""),
-                                rationale=p_dict.get("rationale", "")
-                            ))
-                        return res
-
-                    cand_morning = clone_block(sched_root.get("morning_block", []))
-                    cand_midday = clone_block(sched_root.get("midday_block", []))
-                    cand_evening = clone_block(sched_root.get("evening_block", []))
-
-                    candidate = DinacharyaSchedule(
-                        user_id=str(user_id),
-                        adherence_score=state.get("adherence_score", 1.0),
-                        routine_complexity=sched_root.get("routine_complexity", "Adaptive"),
-                        morning_block=cand_morning,
-                        midday_block=cand_midday,
-                        evening_block=cand_evening,
-                        timestamp=time.time()
-                    )
-
-                    validated = ClinicalRuleEngine.validate(candidate, profile)
-                    resp_data = {
-                        "schedule": validated.model_dump(),
-                        "dosha_profile": profile.model_dump(),
-                        "complexity_level": candidate.routine_complexity,
-                        "timestamp": time.time()
-                    }
-                    
-                    # Requirement 2 & 3: Save to canonical DB and confirm ONLY after write succeeds
-                    db.save_user_schedule(user_id, resp_data, today_date)
-                    
+                mut_res = mutate_user_schedule(user_id, updates, date_str=today_date)
+                if mut_res.get("success"):
                     confirm_text = (
                         "✓ **Schedule Synchronized**: I have updated your daily routine in your persistent vault. "
                         + ", ".join([f"**{k}** is now set to **{v}**" for k, v in updates.items()])
                         + ". All other practices and fixed commitments remain preserved. You can view your updated routine now. 🙏"
                     )
                     db.save_chat_message(user_id, "assistant", confirm_text)
-                    
                     return {
                         "response": confirm_text,
-                        "proposed_schedule": resp_data["schedule"],
+                        "proposed_schedule": mut_res["schedule"],
                         "schedule_updated": True,
                         "timestamp": time.time()
                     }
-                except Exception as write_err:
-                    logger.error(f"Failed to persist accepted schedule change for user {user_id}: {write_err}")
+                else:
+                    logger.error(f"Failed to persist accepted schedule change for user {user_id}: {mut_res.get('error')}")
                     fail_text = "I encountered an error persisting your schedule update to the vault. Your routine was not modified. Please try again."
                     db.save_chat_message(user_id, "assistant", fail_text)
                     return {
@@ -502,11 +524,18 @@ def chat_assistant(request: ChatRequest, user_id: int = Depends(get_current_user
                         "timestamp": time.time()
                     }
 
-        # Execute chat completion via resilient LLMGateway
-        chat_res = gateway.create_chat_completion(
+        # Priority 0: Execute multi-step native tool calling loop connected to live planner tools
+        from src.planning.tools import AVAILABLE_PLANNER_TOOLS, execute_planner_tool
+
+        def bound_tool_executor(t_name: str, t_args: Dict[str, Any]) -> str:
+            return execute_planner_tool(t_name, t_args, caller_user_id=str(user_id))
+
+        t_pre = state.get("schedule_timestamp", 0)
+        chat_res = gateway.execute_tool_loop(
             messages=messages,
-            max_tokens=2500,
-            temperature=0.7
+            tools=AVAILABLE_PLANNER_TOOLS,
+            tool_executor_fn=bound_tool_executor,
+            max_steps=3
         )
         full_response = chat_res.content.strip()
         if not full_response:
@@ -516,94 +545,64 @@ def chat_assistant(request: ChatRequest, user_id: int = Depends(get_current_user
                 "and restorative evening practices are foundational. How can I help adapt your Dinacharya today? 🙏"
             )
         
+        # Check if any tool in the loop successfully mutated the canonical schedule
+        fresh_state = db.get_user_state(user_id)
+        schedule_was_updated = (fresh_state.get("schedule_timestamp", 0) > t_pre)
+        
         # --- Cross-Agent Communication: Proposed Recalibration ---
         proposed_schedule = None
-        if "[RECALIBRATE]" in full_response:
+        if schedule_was_updated and fresh_state.get("last_schedule"):
+            proposed_schedule = fresh_state["last_schedule"].get("schedule")
+        elif "[RECALIBRATE]" in full_response:
             clean_proposal = full_response.replace("[RECALIBRATE]", "").strip()
-            planner_directive = f"USER REQUEST: {request.message}\nAGREED PROPOSAL: {clean_proposal}"
-            
-            logger.info(f"Vaidya AI suggesting recalibration for user {user_id}. Relaying directive to Planner Agent.")
             full_response = clean_proposal
             
-            from src.planning.agent import extract_practice_time_updates, standardize_slot
-            
-            def _run_planner():
-                today_date = datetime.now().strftime('%Y-%m-%d')
-                completed_today = db.get_today_completions(user_id)
-                complexity = AdherenceTracker.determine_complexity(adherence_score)
-                
-                planning_result = planner.generate(
-                    user_id=str(user_id),
-                    profile=profile,
-                    context=context,
-                    adherence_score=adherence_score,
-                    complexity=complexity,
-                    completed_today=completed_today,
-                    user_instruction=planner_directive,
-                    current_schedule=state.get("last_schedule")
+            # Fast deterministic proposal extraction (NO redundant heavy LLM/RAG call)
+            if cached_sched and isinstance(cached_sched, dict) and "schedule" in cached_sched:
+                sched_root = cached_sched["schedule"]
+                all_p = (
+                    sched_root.get("morning_block", []) +
+                    sched_root.get("midday_block", []) +
+                    sched_root.get("evening_block", [])
                 )
-                candidate_schedule = planning_result["schedule"]
-                
-                validated = validate_and_format_schedule(
-                    candidate_schedule, profile, complexity, adherence_score, [], user_id
-                )
-                return validated["schedule"]
-            
-            try:
-                # Run planner with sufficient time for Nemotron reasoning
-                import concurrent.futures
-                with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
-                    future = executor.submit(_run_planner)
-                    proposed_schedule = future.result(timeout=40)
-                    logger.info(f"Recalibration planner completed for user {user_id}.")
-            except Exception as planner_err:
-                logger.warning(f"Recalibration planner fallback triggered for user {user_id}: {planner_err}.")
-                # Deterministic fallback directly applying directive to current schedule
-                curr = state.get("last_schedule")
-                if curr and isinstance(curr, dict) and "schedule" in curr:
-                    sched_root = curr["schedule"]
-                    all_p = (
-                        sched_root.get("morning_block", []) +
-                        sched_root.get("midday_block", []) +
-                        sched_root.get("evening_block", [])
+                p_names = [p.get("name", "") if isinstance(p, dict) else p.name for p in all_p]
+                from src.planning.agent import extract_practice_time_updates, standardize_slot
+                updates = extract_practice_time_updates(full_response, p_names)
+                if updates:
+                    from src.models import DinacharyaSchedule, Practice
+                    from src.safety.guardrails import ClinicalRuleEngine
+                    def clone_b(raw_items):
+                        out = []
+                        for it in raw_items:
+                            d = it if isinstance(it, dict) else it.model_dump()
+                            nm = d.get("name", "")
+                            sl = updates.get(nm, d.get("time_slot", "Flexible"))
+                            out.append(Practice(
+                                name=nm,
+                                time_slot=standardize_slot(sl),
+                                duration_minutes=int(d.get("duration_minutes", 15)),
+                                description=d.get("description", ""),
+                                rationale=d.get("rationale", "")
+                            ))
+                        return out
+                    cand = DinacharyaSchedule(
+                        user_id=str(user_id),
+                        adherence_score=state.get("adherence_score", 1.0),
+                        routine_complexity=sched_root.get("routine_complexity", "Adaptive"),
+                        morning_block=clone_b(sched_root.get("morning_block", [])),
+                        midday_block=clone_b(sched_root.get("midday_block", [])),
+                        evening_block=clone_b(sched_root.get("evening_block", [])),
+                        timestamp=time.time()
                     )
-                    p_names = [p.get("name", "") if isinstance(p, dict) else p.name for p in all_p]
-                    updates = extract_practice_time_updates(planner_directive, p_names)
-                    if updates:
-                        from src.models import DinacharyaSchedule, Practice
-                        from src.safety.guardrails import ClinicalRuleEngine
-                        def clone_b(raw_items):
-                            out = []
-                            for it in raw_items:
-                                d = it if isinstance(it, dict) else it.model_dump()
-                                nm = d.get("name", "")
-                                sl = updates.get(nm, d.get("time_slot", "Flexible"))
-                                out.append(Practice(
-                                    name=nm,
-                                    time_slot=standardize_slot(sl),
-                                    duration_minutes=int(d.get("duration_minutes", 15)),
-                                    description=d.get("description", ""),
-                                    rationale=d.get("rationale", "")
-                                ))
-                            return out
-                        cand = DinacharyaSchedule(
-                            user_id=str(user_id),
-                            adherence_score=state.get("adherence_score", 1.0),
-                            routine_complexity=sched_root.get("routine_complexity", "Adaptive"),
-                            morning_block=clone_b(sched_root.get("morning_block", [])),
-                            midday_block=clone_b(sched_root.get("midday_block", [])),
-                            evening_block=clone_b(sched_root.get("evening_block", [])),
-                            timestamp=time.time()
-                        )
-                        val = ClinicalRuleEngine.validate(cand, profile)
-                        proposed_schedule = val.model_dump()
+                    val = ClinicalRuleEngine.validate(cand, profile)
+                    proposed_schedule = val.model_dump()
 
         db.save_chat_message(user_id, "assistant", full_response)
         
         return {
             "response": full_response, 
             "proposed_schedule": proposed_schedule,
-            "schedule_updated": False,
+            "schedule_updated": schedule_was_updated,
             "timestamp": time.time()
         }
 
@@ -633,7 +632,8 @@ def get_user_notifications_route(
     Fetches persistent notifications (schedule changes, circumstance alerts, reminders).
     """
     notifs = db.get_user_notifications(user_id=user_id, limit=limit, unread_only=unread_only)
-    return {"notifications": notifs, "count": len(notifs)}
+    unread_count = sum(1 for n in notifs if not n.get("is_read"))
+    return {"notifications": notifs, "count": len(notifs), "unread_count": unread_count}
 
 
 @app.post("/api/notifications/{notification_id}/read", response_model=Dict[str, Any])
@@ -761,6 +761,17 @@ def confirm_schedule(request: Dict[str, Any], user_id: int = Depends(get_current
         }
         # Requirement 2 & 3: Save to canonical DB; confirm success ONLY after write succeeds
         db.save_user_schedule(user_id, response_data, today_date)
+
+        # Create idempotent notification for the confirmed schedule
+        db.create_notification(
+            user_id=user_id,
+            event_type="schedule_confirmed",
+            message=f"Your daily routine for {today_date} has been confirmed and locked.",
+            severity="info",
+            channel="in_app",
+            idempotency_key=f"confirm-direct-{user_id}-{today_date}-{int(time.time() // 60)}"
+        )
+
         logger.info(f"Successfully persisted confirmed schedule for user {user_id}")
         return {"status": "success", "schedule": response_data["schedule"]}
     except HTTPException:

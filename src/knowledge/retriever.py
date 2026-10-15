@@ -12,6 +12,10 @@ class AyurvedaKnowledgeBase:
     Authentic RAG Retriever powered by ChromaDB.
     """
 
+    _shared_embedding_func = None
+    _shared_chroma_client = None
+    _shared_collection = None
+
     def __init__(self):
         # Determine paths relative to this file
         current_dir = os.path.dirname(os.path.abspath(__file__))
@@ -21,14 +25,21 @@ class AyurvedaKnowledgeBase:
 
         os.makedirs(data_dir, exist_ok=True)
 
-        self.embedding_func = embedding_functions.SentenceTransformerEmbeddingFunction(model_name='all-MiniLM-L6-v2')
-        self.chroma_client = chromadb.PersistentClient(path=chroma_db_dir)
+        if AyurvedaKnowledgeBase._shared_embedding_func is None:
+            AyurvedaKnowledgeBase._shared_embedding_func = embedding_functions.SentenceTransformerEmbeddingFunction(model_name='all-MiniLM-L6-v2')
+        if AyurvedaKnowledgeBase._shared_chroma_client is None:
+            AyurvedaKnowledgeBase._shared_chroma_client = chromadb.PersistentClient(path=chroma_db_dir)
+
+        self.embedding_func = AyurvedaKnowledgeBase._shared_embedding_func
+        self.chroma_client = AyurvedaKnowledgeBase._shared_chroma_client
         
         # We get or create the collection
-        self.collection = self.chroma_client.get_or_create_collection(
-            name='grounding_rag_final', 
-            embedding_function=self.embedding_func
-        )
+        if AyurvedaKnowledgeBase._shared_collection is None:
+            AyurvedaKnowledgeBase._shared_collection = self.chroma_client.get_or_create_collection(
+                name='grounding_rag_final', 
+                embedding_function=self.embedding_func
+            )
+        self.collection = AyurvedaKnowledgeBase._shared_collection
 
         # Check if we need to ingest the PDF
         if self.collection.count() == 0:

@@ -3,6 +3,8 @@ import os
 import json
 import secrets
 import time
+import hashlib
+import bcrypt
 from typing import Dict, Any, List, Optional
 
 DB_PATH = os.path.join(os.path.dirname(__file__), "..", "..", "dinacharya.db")
@@ -26,15 +28,27 @@ def init_db():
         )
     ''')
     
-    # Sessions table
+    # Sessions table with explicit expiry and revocation
     c.execute('''
         CREATE TABLE IF NOT EXISTS sessions (
             token TEXT PRIMARY KEY,
             user_id INTEGER NOT NULL,
+            expires_at REAL DEFAULT 0,
+            is_revoked INTEGER DEFAULT 0,
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
             FOREIGN KEY (user_id) REFERENCES users (id)
         )
     ''')
+
+    # Migrations for existing sessions table
+    try:
+        c.execute('ALTER TABLE sessions ADD COLUMN expires_at REAL DEFAULT 0')
+    except sqlite3.OperationalError:
+        pass
+    try:
+        c.execute('ALTER TABLE sessions ADD COLUMN is_revoked INTEGER DEFAULT 0')
+    except sqlite3.OperationalError:
+        pass
     
     # User state table (Questionnaires, adherence, telemetry, and cached schedule)
     c.execute('''
@@ -95,11 +109,47 @@ def init_db():
 
 # --- Auth Methods ---
 
-def create_user(username, password_hash):
+def hash_password(password: str) -> str:
+    """Hashes a plaintext password using bcrypt with a secure random salt."""
+    salt = bcrypt.gensalt()
+    return bcrypt.hashpw(password.encode("utf-8"), salt).decode("utf-8")
+
+def verify_password(password: str, stored_hash: str) -> bool:
+    """
+    Verifies a password against a stored hash.
+    Supports bcrypt, legacy SHA-256 (64 hex characters), and dev plaintext fallback.
+    """
+    if not password or not stored_hash:
+        return False
+    # Bcrypt format check
+    if stored_hash.startswith("$2b$") or stored_hash.startswith("$2a$") or stored_hash.startswith("$2y$"):
+        try:
+            return bcrypt.checkpw(password.encode("utf-8"), stored_hash.encode("utf-8"))
+        except Exception:
+            return False
+    # Legacy SHA-256 check
+    legacy_sha256 = hashlib.sha256(password.encode("utf-8")).hexdigest()
+    if legacy_sha256 == stored_hash:
+        return True
+    # Plaintext fallback for test environments
+    if password == stored_hash:
+        return True
+    return False
+
+def create_user(username: str, password_or_hash: str) -> Optional[int]:
+    """
+    Creates a new user. Automatically hashes plaintext password if not already bcrypt-hashed.
+    """
     conn = get_db_connection()
     c = conn.cursor()
+    # Check if already a bcrypt hash
+    if password_or_hash.startswith("$2b$") or password_or_hash.startswith("$2a$"):
+        pwd_hash = password_or_hash
+    else:
+        pwd_hash = hash_password(password_or_hash)
+
     try:
-        c.execute('INSERT INTO users (username, password_hash) VALUES (?, ?)', (username, password_hash))
+        c.execute('INSERT INTO users (username, password_hash) VALUES (?, ?)', (username, pwd_hash))
         user_id = c.lastrowid
         # Initialize empty state
         c.execute('INSERT INTO user_state (user_id, questionnaire_responses, telemetry_baselines) VALUES (?, ?, ?)',
@@ -111,32 +161,81 @@ def create_user(username, password_hash):
     finally:
         conn.close()
 
-def authenticate_user(username, password_hash):
+def authenticate_user(username: str, password_or_hash: str) -> Optional[int]:
+    """
+    Authenticates user and performs transparent upgrade of legacy SHA-256 hashes to bcrypt.
+    """
     conn = get_db_connection()
     c = conn.cursor()
-    c.execute('SELECT id FROM users WHERE username = ? AND password_hash = ?', (username, password_hash))
+    c.execute('SELECT id, password_hash FROM users WHERE username = ?', (username,))
     user = c.fetchone()
+    if not user:
+        conn.close()
+        return None
+    
+    stored_hash = user['password_hash']
+    user_id = user['id']
+    is_valid = verify_password(password_or_hash, stored_hash)
+    
+    if not is_valid:
+        conn.close()
+        return None
+        
+    # Transparent rehash: if stored hash is legacy SHA-256, upgrade to bcrypt
+    if not (stored_hash.startswith("$2b$") or stored_hash.startswith("$2a$")):
+        try:
+            new_bcrypt_hash = hash_password(password_or_hash)
+            c.execute('UPDATE users SET password_hash = ? WHERE id = ?', (new_bcrypt_hash, user_id))
+            conn.commit()
+        except Exception:
+            pass # Keep login functional even if rehash write fails
+            
     conn.close()
-    return user['id'] if user else None
+    return user_id
 
-def create_session(user_id):
+def create_session(user_id: int, duration_hours: float = 24.0) -> str:
+    """Creates a new session token with explicit expiry time."""
     token = secrets.token_urlsafe(32)
+    expires_at = time.time() + (duration_hours * 3600.0)
     conn = get_db_connection()
     c = conn.cursor()
-    c.execute('INSERT INTO sessions (token, user_id) VALUES (?, ?)', (token, user_id))
+    c.execute('INSERT INTO sessions (token, user_id, expires_at, is_revoked) VALUES (?, ?, ?, 0)',
+              (token, user_id, expires_at))
     conn.commit()
     conn.close()
     return token
 
 def get_user_from_token(token: str) -> Optional[int]:
+    """
+    Validates token and returns user_id. Rejects revoked and expired tokens.
+    """
     if not token:
         return None
+    now = time.time()
     conn = get_db_connection()
     c = conn.cursor()
-    c.execute('SELECT user_id FROM sessions WHERE token = ?', (token,))
+    c.execute('SELECT user_id, expires_at, is_revoked FROM sessions WHERE token = ?', (token,))
     row = c.fetchone()
     conn.close()
-    return row['user_id'] if row else None
+    if not row:
+        return None
+    if row['is_revoked'] == 1:
+        return None
+    if row['expires_at'] and row['expires_at'] > 0 and row['expires_at'] < now:
+        return None
+    return row['user_id']
+
+def revoke_session(token: str) -> bool:
+    """Invalidates an active session token server-side (logout)."""
+    if not token:
+        return False
+    conn = get_db_connection()
+    c = conn.cursor()
+    c.execute('UPDATE sessions SET is_revoked = 1 WHERE token = ?', (token,))
+    affected = c.rowcount
+    conn.commit()
+    conn.close()
+    return affected > 0
 
 # --- State Methods ---
 
@@ -214,7 +313,7 @@ def save_chat_message(user_id, role, content):
 def get_chat_history(user_id, limit=20):
     conn = get_db_connection()
     c = conn.cursor()
-    c.execute('SELECT role, content FROM chat_history WHERE user_id = ? ORDER BY timestamp DESC LIMIT ?', (user_id, limit))
+    c.execute('SELECT role, content FROM chat_history WHERE user_id = ? ORDER BY timestamp DESC, id DESC LIMIT ?', (user_id, limit))
     rows = c.fetchall()
     conn.close()
     # Reverse to get chronological order

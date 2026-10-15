@@ -570,6 +570,10 @@ JSON STRUCTURE (Return ONLY valid JSON):
             timestamp=time.time()
         )
 
+        # Mandatory deterministic safety guardrail filter
+        from src.safety.guardrails import ClinicalRuleEngine
+        adapted_schedule = ClinicalRuleEngine.validate(adapted_schedule, profile)
+
         # Persist schedule update
         try:
             today_date = datetime.now().strftime('%Y-%m-%d')

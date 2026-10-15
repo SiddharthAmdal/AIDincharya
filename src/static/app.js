@@ -29,10 +29,138 @@ document.head.appendChild(style);
 // --- Auth & API ---
 function getToken() { return localStorage.getItem('dinacharya_token'); }
 function setToken(t) { localStorage.setItem('dinacharya_token', t); }
-function logout() { 
+async function logout() { 
+    try {
+        const token = getToken();
+        if (token) {
+            await fetch('/api/auth/logout', {
+                method: 'POST',
+                headers: { 'Authorization': `Bearer ${token}` }
+            });
+        }
+    } catch(e) { console.warn("Logout error:", e); }
     localStorage.removeItem('dinacharya_token'); 
-    sessionStorage.removeItem('schedule_cache'); 
+    sessionStorage.clear(); 
     window.location.href = '/'; 
+}
+
+// --- Notifications Inbox & UI ---
+async function initNotifications() {
+    const notifBtn = document.getElementById('nav-notifications-btn') || document.querySelector('button[aria-label="Notifications"]');
+    if (!notifBtn) return;
+
+    // Create badge if not present
+    let badge = document.getElementById('nav-notification-badge');
+    if (!badge) {
+        badge = document.createElement('span');
+        badge.id = 'nav-notification-badge';
+        badge.className = 'hidden absolute -top-1 -right-1 bg-red-600 text-white text-[10px] font-bold w-4 h-4 rounded-full flex items-center justify-center';
+        notifBtn.classList.add('relative');
+        notifBtn.appendChild(badge);
+    }
+
+    // Modal / Dropdown container
+    let dropdown = document.getElementById('notifications-dropdown');
+    if (!dropdown) {
+        dropdown = document.createElement('div');
+        dropdown.id = 'notifications-dropdown';
+        dropdown.className = 'hidden fixed top-20 right-8 md:right-16 w-80 md:w-96 bg-white rounded-2xl shadow-2xl border border-gray-100 z-[120] overflow-hidden message-entrance';
+        dropdown.innerHTML = `
+            <div class="p-4 border-b border-gray-100 flex justify-between items-center bg-gray-50/50">
+                <div class="flex items-center gap-2">
+                    <span class="material-symbols-outlined text-primary text-xl">notifications</span>
+                    <h3 class="font-bold text-gray-800 text-sm">Notifications</h3>
+                </div>
+                <button id="close-notif-dropdown" class="text-gray-400 hover:text-gray-600 text-sm font-semibold">✕</button>
+            </div>
+            <div id="notifications-list" class="max-h-80 overflow-y-auto divide-y divide-gray-50 p-2">
+                <div class="p-6 text-center text-gray-400 text-sm">Loading notifications...</div>
+            </div>
+        `;
+        document.body.appendChild(dropdown);
+
+        document.getElementById('close-notif-dropdown').onclick = () => {
+            dropdown.classList.add('hidden');
+        };
+
+        // Close on outside click
+        document.addEventListener('click', (e) => {
+            if (!dropdown.contains(e.target) && !notifBtn.contains(e.target)) {
+                dropdown.classList.add('hidden');
+            }
+        });
+    }
+
+    // Function to load and render notifications
+    async function loadNotifications() {
+        const res = await authenticatedFetch(`${API_BASE}/notifications?limit=15`);
+        if (!res || !res.ok) return;
+        const data = await res.json();
+        const notifs = data.notifications || [];
+        const unreadCount = data.unread_count || notifs.filter(n => !n.is_read).length;
+
+        if (unreadCount > 0) {
+            badge.innerText = unreadCount > 9 ? '9+' : unreadCount;
+            badge.classList.remove('hidden');
+        } else {
+            badge.classList.add('hidden');
+        }
+
+        const listContainer = document.getElementById('notifications-list');
+        if (!listContainer) return;
+
+        if (notifs.length === 0) {
+            listContainer.innerHTML = `
+                <div class="p-8 text-center text-gray-400 text-sm">
+                    <span class="material-symbols-outlined text-3xl mb-2 text-gray-300 block">notifications_off</span>
+                    No notifications yet.
+                </div>
+            `;
+            return;
+        }
+
+        listContainer.innerHTML = notifs.map(n => `
+            <div class="p-3.5 rounded-xl transition-colors ${n.is_read ? 'opacity-70 bg-white' : 'bg-primary/5'} hover:bg-gray-50 flex items-start justify-between gap-3 my-1">
+                <div class="flex-1">
+                    <div class="flex items-center gap-1.5 mb-1">
+                        <span class="text-xs font-bold uppercase tracking-wider ${n.severity === 'warning' ? 'text-amber-600' : 'text-primary'}">${n.event_type.replace('_', ' ')}</span>
+                        ${!n.is_read ? '<span class="w-1.5 h-1.5 bg-primary rounded-full"></span>' : ''}
+                    </div>
+                    <p class="text-xs text-gray-700 leading-relaxed">${n.message}</p>
+                    <span class="text-[10px] text-gray-400 mt-1 block">${n.created_at || 'Just now'}</span>
+                </div>
+                ${!n.is_read ? `
+                    <button data-notif-id="${n.id}" class="mark-read-btn text-[11px] font-semibold text-primary hover:underline self-center shrink-0">
+                        Mark read
+                    </button>
+                ` : ''}
+            </div>
+        `).join('');
+
+        // Wire mark as read buttons
+        listContainer.querySelectorAll('.mark-read-btn').forEach(btn => {
+            btn.onclick = async (e) => {
+                e.stopPropagation();
+                const nid = btn.getAttribute('data-notif-id');
+                const mRes = await authenticatedFetch(`${API_BASE}/notifications/${nid}/read`, { method: 'POST' });
+                if (mRes && mRes.ok) {
+                    loadNotifications();
+                }
+            };
+        });
+    }
+
+    // Toggle dropdown
+    notifBtn.onclick = (e) => {
+        e.stopPropagation();
+        dropdown.classList.toggle('hidden');
+        if (!dropdown.classList.contains('hidden')) {
+            loadNotifications();
+        }
+    };
+
+    // Initial badge check
+    loadNotifications();
 }
 
 async function authenticatedFetch(url, options = {}) {
@@ -48,7 +176,10 @@ async function authenticatedFetch(url, options = {}) {
 }
 
 // --- Hybrid Caching Layer ---
+let latestScheduleVersion = 0;
+
 async function getSchedule(forceRefresh = false) {
+    const currentVersion = ++latestScheduleVersion;
     const now = Date.now();
     const CACHE_DURATION = 10 * 60 * 1000; 
     const cachedString = sessionStorage.getItem('schedule_cache');
@@ -56,14 +187,16 @@ async function getSchedule(forceRefresh = false) {
     try { if(cachedString) cache = JSON.parse(cachedString); } catch(e) {}
     if (!forceRefresh && cache && cache.data && (now - cache.timestamp < CACHE_DURATION)) return cache.data;
 
-    // Fast-path: Check if there is already a valid persisted schedule in the vault for today
+    // Fast-path: Check if there is already a valid persisted schedule in the vault
     if (!forceRefresh) {
         try {
             const currentRes = await authenticatedFetch(`${API_BASE}/schedule/current`);
             if (currentRes && currentRes.ok) {
                 const currentData = await currentRes.json();
                 if (currentData && currentData.schedule) {
-                    sessionStorage.setItem('schedule_cache', JSON.stringify({ data: currentData, timestamp: now }));
+                    if (currentVersion === latestScheduleVersion) {
+                        sessionStorage.setItem('schedule_cache', JSON.stringify({ data: currentData, timestamp: now }));
+                    }
                     return currentData;
                 }
             }
@@ -87,7 +220,9 @@ async function getSchedule(forceRefresh = false) {
     });
     if (!res) return null;
     const data = await res.json();
-    sessionStorage.setItem('schedule_cache', JSON.stringify({ data: data, timestamp: now }));
+    if (currentVersion === latestScheduleVersion) {
+        sessionStorage.setItem('schedule_cache', JSON.stringify({ data: data, timestamp: now }));
+    }
     return data;
 }
 
@@ -294,17 +429,21 @@ async function loadRoutineData(forceRefresh = false) {
             section.className = 'relative z-10 mb-12 flex flex-col sm:flex-row gap-8';
             let tasksHtml = '';
             tasks.forEach(task => {
+                const taskName = task.name || task.activity || 'Practice';
+                const taskSlot = task.time_slot || task.time || 'Flexible';
+                const taskRationale = task.rationale || task.description || 'Ayurvedic daily practice.';
+                const taskDesc = task.description || '';
                 tasksHtml += `
                     <div class="timeline-card bg-white p-6 rounded-[2rem] border border-outline-variant/10 shadow-sm cursor-pointer mb-4" onclick="this.classList.toggle('expanded')">
                         <div class="flex justify-between items-center">
                             <div class="flex items-center gap-4">
                                 <div class="w-12 h-12 rounded-2xl bg-primary/5 text-primary flex items-center justify-center"><span class="material-symbols-outlined">self_improvement</span></div>
-                                <div><p class="font-bold text-lg">${task.name}</p><p class="text-sm opacity-60">${task.time_slot}</p></div>
+                                <div><p class="font-bold text-lg">${taskName}</p><p class="text-sm opacity-60">${taskSlot}</p></div>
                             </div>
                             <span class="material-symbols-outlined expand-icon">expand_more</span>
                         </div>
-                        <div class="timeline-card-content"><p class="text-on-surface-variant mb-4">${task.description}</p><div class="bg-surface-container-low p-4 rounded-2xl italic text-sm text-primary">"${task.rationale}"</div>
-                        <button class="w-full mt-6 py-3 bg-primary text-on-primary rounded-2xl font-bold" onclick="event.stopPropagation(); authenticatedFetch('${API_BASE}/adherence/log', { method: 'POST', body: JSON.stringify({ user_id: 'current', completed_practices: ['${task.name}'], recommended_practices: [] }) }).then(() => { sessionStorage.removeItem('schedule_cache'); loadRoutineData(); })">Mark Complete</button></div>
+                        <div class="timeline-card-content"><p class="text-on-surface-variant mb-4">${taskDesc}</p><div class="bg-surface-container-low p-4 rounded-2xl italic text-sm text-primary">"${taskRationale}"</div>
+                        <button class="w-full mt-6 py-3 bg-primary text-on-primary rounded-2xl font-bold" onclick="event.stopPropagation(); authenticatedFetch('${API_BASE}/adherence/log', { method: 'POST', body: JSON.stringify({ user_id: 'current', completed_practices: ['${taskName}'], recommended_practices: [] }) }).then(() => { sessionStorage.removeItem('schedule_cache'); loadRoutineData(); })">Mark Complete</button></div>
                     </div>
                 `;
             });
@@ -347,16 +486,21 @@ async function loadInsightsData() {
                     indicator.remove();
                     await typeMessage(chatHistory, chatData.response);
                     if (chatData.schedule_updated && chatData.proposed_schedule) {
+                        latestScheduleVersion++;
                         sessionStorage.removeItem('schedule_cache');
                         sessionStorage.setItem('schedule_cache', JSON.stringify({ 
                             data: { schedule: chatData.proposed_schedule }, 
                             timestamp: Date.now() 
                         }));
                         showToast("✓ Vault Synchronized.");
+                        loadDashboardData();
+                        loadRoutineData();
                     } else if (chatData.proposed_schedule) {
                         const accepted = await showRecalibrationFlowchart(chatData.proposed_schedule);
                         if (accepted) { 
                             await typeMessage(chatHistory, "Approval relayed to Planner Agent. Your vault is now synchronized."); 
+                            sessionStorage.removeItem('schedule_cache');
+                            loadDashboardData();
                             loadRoutineData(); 
                         }
                     }
@@ -431,7 +575,14 @@ function initApp() {
     loadDashboardData();
     loadRoutineData();
     loadInsightsData();
+    initNotifications();
 }
 
-document.addEventListener('DOMContentLoaded', initApp);
-if (document.readyState === 'complete' || document.readyState === 'interactive') initApp();
+let appInitialized = false;
+function safeInitApp() {
+    if (appInitialized) return;
+    appInitialized = true;
+    initApp();
+}
+document.addEventListener('DOMContentLoaded', safeInitApp);
+if (document.readyState === 'complete' || document.readyState === 'interactive') safeInitApp();

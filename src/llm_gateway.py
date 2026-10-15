@@ -260,7 +260,11 @@ class LLMGateway:
                     fn_args = {"raw_arguments": tc.function.arguments}
 
                 logger.info(f"Dispatching tool '{fn_name}' with args {fn_args}")
-                tool_output_str = tool_executor_fn(fn_name, fn_args)
+                try:
+                    tool_output_str = tool_executor_fn(fn_name, fn_args)
+                except Exception as t_err:
+                    logger.error(f"Tool '{fn_name}' execution threw exception: {t_err}")
+                    tool_output_str = json.dumps({"error": f"Tool execution failed: {str(t_err)}"})
 
                 history.append({
                     "role": "tool",
