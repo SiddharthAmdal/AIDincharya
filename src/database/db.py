@@ -70,14 +70,22 @@ def init_db():
         )
     ''')
 
-    # Task completions table (for date-specific tracking)
+    # Notifications table (for agent events, alerts, and circumstance adaptations)
     c.execute('''
-        CREATE TABLE IF NOT EXISTS completions (
+        CREATE TABLE IF NOT EXISTS notifications (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             user_id INTEGER NOT NULL,
-            practice_name TEXT NOT NULL,
-            completion_date DATE DEFAULT (CURRENT_DATE),
-            timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            event_type TEXT NOT NULL,
+            activity_name TEXT,
+            old_time_slot TEXT,
+            new_time_slot TEXT,
+            message TEXT NOT NULL,
+            severity TEXT DEFAULT 'info',
+            channel TEXT DEFAULT 'in_app',
+            delivery_status TEXT DEFAULT 'delivered',
+            is_read BOOLEAN DEFAULT FALSE,
+            idempotency_key TEXT UNIQUE,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
             FOREIGN KEY (user_id) REFERENCES users (id)
         )
     ''')
@@ -229,5 +237,94 @@ def get_today_completions(user_id) -> List[str]:
     conn.close()
     return [row["practice_name"] for row in rows]
 
+# --- Notification Methods ---
+
+def create_notification(
+    user_id: int,
+    event_type: str,
+    message: str,
+    activity_name: Optional[str] = None,
+    old_time_slot: Optional[str] = None,
+    new_time_slot: Optional[str] = None,
+    severity: str = "info",
+    channel: str = "in_app",
+    delivery_status: str = "delivered",
+    idempotency_key: Optional[str] = None
+) -> Optional[int]:
+    """
+    Creates a persistent notification record with duplicate event prevention (idempotency).
+    If idempotency_key is provided and already exists, returns existing notification ID without duplicating.
+    """
+    conn = get_db_connection()
+    c = conn.cursor()
+    try:
+        c.execute('''
+            INSERT INTO notifications (
+                user_id, event_type, activity_name, old_time_slot, new_time_slot,
+                message, severity, channel, delivery_status, idempotency_key
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ''', (
+            user_id, event_type, activity_name, old_time_slot, new_time_slot,
+            message, severity, channel, delivery_status, idempotency_key
+        ))
+        notification_id = c.lastrowid
+        conn.commit()
+        return notification_id
+    except sqlite3.IntegrityError:
+        # Idempotency conflict: already created
+        if idempotency_key:
+            c.execute('SELECT id FROM notifications WHERE idempotency_key = ?', (idempotency_key,))
+            row = c.fetchone()
+            return row["id"] if row else None
+        return None
+    finally:
+        conn.close()
+
+def get_user_notifications(user_id: int, limit: int = 20, unread_only: bool = False) -> List[Dict[str, Any]]:
+    conn = get_db_connection()
+    c = conn.cursor()
+    if unread_only:
+        c.execute('''
+            SELECT * FROM notifications 
+            WHERE user_id = ? AND is_read = FALSE 
+            ORDER BY created_at DESC LIMIT ?
+        ''', (user_id, limit))
+    else:
+        c.execute('''
+            SELECT * FROM notifications 
+            WHERE user_id = ? 
+            ORDER BY created_at DESC LIMIT ?
+        ''', (user_id, limit))
+    rows = c.fetchall()
+    conn.close()
+    return [
+        {
+            "id": r["id"],
+            "user_id": r["user_id"],
+            "event_type": r["event_type"],
+            "activity_name": r["activity_name"],
+            "old_time_slot": r["old_time_slot"],
+            "new_time_slot": r["new_time_slot"],
+            "message": r["message"],
+            "severity": r["severity"],
+            "channel": r["channel"],
+            "delivery_status": r["delivery_status"],
+            "is_read": bool(r["is_read"]),
+            "idempotency_key": r["idempotency_key"],
+            "created_at": r["created_at"]
+        }
+        for r in rows
+    ]
+
+def mark_notification_read(notification_id: int, user_id: int) -> bool:
+    conn = get_db_connection()
+    c = conn.cursor()
+    c.execute('UPDATE notifications SET is_read = TRUE WHERE id = ? AND user_id = ?', (notification_id, user_id))
+    affected = c.rowcount
+    conn.commit()
+    conn.close()
+    return affected > 0
+
 # Initialize on import
 init_db()
+

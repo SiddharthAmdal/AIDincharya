@@ -56,6 +56,22 @@ async function getSchedule(forceRefresh = false) {
     try { if(cachedString) cache = JSON.parse(cachedString); } catch(e) {}
     if (!forceRefresh && cache && cache.data && (now - cache.timestamp < CACHE_DURATION)) return cache.data;
 
+    // Fast-path: Check if there is already a valid persisted schedule in the vault for today
+    if (!forceRefresh) {
+        try {
+            const currentRes = await authenticatedFetch(`${API_BASE}/schedule/current`);
+            if (currentRes && currentRes.ok) {
+                const currentData = await currentRes.json();
+                if (currentData && currentData.schedule) {
+                    sessionStorage.setItem('schedule_cache', JSON.stringify({ data: currentData, timestamp: now }));
+                    return currentData;
+                }
+            }
+        } catch (err) {
+            console.warn("Fast-path schedule fetch failed, falling back to generate:", err);
+        }
+    }
+
     const simulateFever = sessionStorage.getItem('simulate_fever') === 'true';
     const telemetry = simulateFever ? { body_temp_c: 38.5 } : {};
     const symptoms = simulateFever ? ["Active fever"] : [];
@@ -64,6 +80,7 @@ async function getSchedule(forceRefresh = false) {
         method: 'POST', 
         body: JSON.stringify({ 
             user_id: "current", 
+            force_regen: forceRefresh,
             context: { season: "Hemanta", weather: "Cold", temperature_c: 10.0, calendar_events: [], self_report_symptoms: symptoms },
             wearable_telemetry_7d: telemetry
         }) 
@@ -212,6 +229,10 @@ async function showRecalibrationFlowchart(proposedSchedule) {
             if (res && res.ok) { 
                 flowDiv.remove(); 
                 sessionStorage.removeItem('schedule_cache'); 
+                sessionStorage.setItem('schedule_cache', JSON.stringify({ 
+                    data: { schedule: proposedSchedule }, 
+                    timestamp: Date.now() 
+                }));
                 showToast("✓ Vault Synchronized."); 
                 loadDashboardData(); loadRoutineData();
                 resolve(true); 
@@ -232,7 +253,7 @@ async function loadDashboardData() {
     try {
         container.innerHTML = `<div class="p-8 text-center animate-pulse italic opacity-60">Syncing Wellness Vault...</div>`;
         const data = await getSchedule();
-        if (!data) return;
+        if (!data || !data.schedule) return;
         container.innerHTML = '';
         const tasks = data.schedule.morning_block || [];
         if (tasks.length === 0) { container.innerHTML = `<p class="p-4 text-center opacity-60">Block complete.</p>`; return; }
@@ -249,13 +270,22 @@ async function loadDashboardData() {
     } catch(e) { console.error(e); }
 }
 
-async function loadRoutineData() {
+async function loadRoutineData(forceRefresh = false) {
     const container = document.getElementById('routine-timeline-container');
     if (!container || !window.location.pathname.includes('/routine')) return;
     try {
         container.innerHTML = `<div class="p-20 text-center animate-pulse italic text-primary">Accessing Persistent Vault...</div>`;
-        const data = await getSchedule();
-        if (!data) return;
+        const data = await getSchedule(forceRefresh);
+        if (!data || !data.schedule) {
+            container.innerHTML = `
+                <div class="p-12 text-center glass-card bg-surface-container-low/40 border border-error/20 rounded-[2rem] shadow-lg max-w-xl mx-auto my-8">
+                    <span class="material-symbols-outlined text-4xl text-error mb-2">sync_problem</span>
+                    <h4 class="font-headline-sm text-on-surface mb-2">Vault Synchronization Interrupted</h4>
+                    <p class="text-sm opacity-70 mb-6">Unable to retrieve routine from the vault. The service may have encountered a temporary constraint.</p>
+                    <button onclick="loadRoutineData(true)" class="px-6 py-3 bg-primary text-on-primary rounded-xl font-bold shadow-md hover:scale-[1.02] active:scale-95 transition-all">Retry Synchronization</button>
+                </div>`;
+            return;
+        }
         container.innerHTML = '<div class="hidden sm:block absolute left-[120px] top-8 bottom-8 w-[2px] bg-outline-variant/20"></div>';
         ['morning_block', 'midday_block', 'evening_block'].forEach(blockKey => {
             const tasks = data.schedule[blockKey] || [];
@@ -316,9 +346,19 @@ async function loadInsightsData() {
                     const chatData = await chatRes.json();
                     indicator.remove();
                     await typeMessage(chatHistory, chatData.response);
-                    if (chatData.proposed_schedule) {
+                    if (chatData.schedule_updated && chatData.proposed_schedule) {
+                        sessionStorage.removeItem('schedule_cache');
+                        sessionStorage.setItem('schedule_cache', JSON.stringify({ 
+                            data: { schedule: chatData.proposed_schedule }, 
+                            timestamp: Date.now() 
+                        }));
+                        showToast("✓ Vault Synchronized.");
+                    } else if (chatData.proposed_schedule) {
                         const accepted = await showRecalibrationFlowchart(chatData.proposed_schedule);
-                        if (accepted) { await typeMessage(chatHistory, "Approval relayed to Planner Agent. Your vault is now synchronized."); loadRoutineData(); }
+                        if (accepted) { 
+                            await typeMessage(chatHistory, "Approval relayed to Planner Agent. Your vault is now synchronized."); 
+                            loadRoutineData(); 
+                        }
                     }
                 } else { indicator.remove(); }
             };

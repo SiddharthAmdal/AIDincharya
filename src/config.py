@@ -17,9 +17,11 @@ LLM_PROVIDER = os.getenv("LLM_PROVIDER", "nvidia").lower()
 
 # Default AI Model based on provider
 if LLM_PROVIDER == "nvidia":
-    DEFAULT_MODEL = os.getenv("DEFAULT_MODEL", "meta/llama-3.1-70b-instruct")
+    DEFAULT_MODEL = os.getenv("DEFAULT_MODEL", "nvidia/nemotron-3.5-lightning-30b-a3b")
+    FALLBACK_MODEL = os.getenv("FALLBACK_MODEL", "openai/gpt-oss-20b")
 else:
     DEFAULT_MODEL = os.getenv("DEFAULT_MODEL", "gpt-4o-mini")
+    FALLBACK_MODEL = os.getenv("FALLBACK_MODEL", "gpt-3.5-turbo")
 
 # FastAPI Configurations
 APP_NAME = "Ayurvedic Dinacharya Automation API"

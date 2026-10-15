@@ -23,6 +23,7 @@ from src.planning.agent import DinacharyaPlannerAgent
 from src.safety.guardrails import ClinicalRuleEngine
 from src.knowledge.retriever import AyurvedaKnowledgeBase
 from src.config import APP_NAME, DEBUG, DEFAULT_MODEL
+from src.llm_gateway import LLMGateway
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -151,52 +152,22 @@ def generate_schedule(request: ScheduleGenerateRequest, user_id: int = Depends(g
         
         # --- Smart Daily Logic ---
         today_date = datetime.now().strftime('%Y-%m-%d')
-        current_time_val = time.time()
-        current_hour = datetime.now().hour
+        cached_sched = state.get("last_schedule")
         
-        questionnaire = state.get("questionnaire_responses", {})
-        adherence_score = state.get("adherence_score", 1.0)
-        completed_today = db.get_today_completions(user_id)
-
-        force_regen = False
+        force_regen = getattr(request, "force_regen", False) or False
         
-        # A. Check if it's a new day
-        if state.get("schedule_date") != today_date:
-            logger.info(f"New day detected ({today_date}). Forcing fresh routine.")
-            force_regen = True
-        else:
-            # B. Check for missed tasks (Stipulated time logic)
-            cached_sched = state.get("last_schedule")
-            if cached_sched:
-                blocks = cached_sched.get("schedule", {}).get("morning_block", []) + \
-                         cached_sched.get("schedule", {}).get("midday_block", []) + \
-                         cached_sched.get("schedule", {}).get("evening_block", [])
-                
-                for practice in blocks:
-                    time_slot = practice.get("time_slot", "")
-                    if " - " in time_slot:
-                        end_time_str = time_slot.split(" - ")[1] # e.g. "07:00"
-                        try:
-                            end_hour = int(end_time_str.split(":")[0])
-                            # If current hour is past the end of the task and it's NOT completed
-                            if current_hour >= end_hour and practice["name"] not in completed_today:
-                                logger.info(f"Missed task detected: {practice['name']} (End: {end_time_str}). Recalibrating...")
-                                force_regen = True
-                                break
-                        except: continue
+        # A. Check if user already has a valid persisted schedule for today
+        has_valid_today_schedule = (
+            cached_sched is not None 
+            and isinstance(cached_sched, dict) 
+            and "schedule" in cached_sched 
+            and "dosha_profile" in cached_sched
+            and state.get("schedule_date") == today_date
+        )
 
-        if not force_regen and state.get("last_schedule"):
-            logger.info(f"Serving stable schedule for user {user_id}")
-            # Filter out completed tasks from the cached schedule so they disappear from UI
-            cached = state["last_schedule"]
-            if "schedule" in cached:
-                for block in ["morning_block", "midday_block", "evening_block"]:
-                    if block in cached["schedule"]:
-                        cached["schedule"][block] = [
-                            p for p in cached["schedule"][block] 
-                            if p["name"] not in completed_today
-                        ]
-            return cached
+        if not force_regen and not request.questionnaire_responses and has_valid_today_schedule:
+            logger.info(f"Serving stable persisted schedule for user {user_id}")
+            return cached_sched
 
         logger.info(f"Generating/Compensating routine for user {user_id}...")
 
@@ -209,6 +180,9 @@ def generate_schedule(request: ScheduleGenerateRequest, user_id: int = Depends(g
             for idx, sym in enumerate(request.context.self_report_symptoms):
                 symptoms_map[f"symptom_{idx}"] = sym
 
+        questionnaire = request.questionnaire_responses or state.get("questionnaire_responses", {})
+        adherence_score = state.get("adherence_score", 1.0)
+
         profile = DoshaMapper.generate_profile(
             user_id=str(user_id),
             questionnaire=questionnaire,
@@ -220,6 +194,7 @@ def generate_schedule(request: ScheduleGenerateRequest, user_id: int = Depends(g
         complexity = AdherenceTracker.determine_complexity(adherence_score)
 
         # 4. Planning Domain
+        completed_today = []
         planner = DinacharyaPlannerAgent()
         planning_result = planner.generate(
             user_id=str(user_id),
@@ -246,6 +221,23 @@ def generate_schedule(request: ScheduleGenerateRequest, user_id: int = Depends(g
         import traceback
         traceback.print_exc()
         raise HTTPException(status_code=500, detail=f"Error compiling routine: {str(e)}")
+
+
+@app.get("/api/schedule/current", response_model=Dict[str, Any])
+def get_current_schedule(user_id: int = Depends(get_current_user)):
+    """
+    Retrieves the current canonical persisted schedule for today directly from the database.
+    Sub-millisecond latency. Does not trigger live LLM generation.
+    """
+    state = db.get_user_state(user_id)
+    today_date = datetime.now().strftime('%Y-%m-%d')
+    cached_sched = state.get("last_schedule")
+    
+    if cached_sched and isinstance(cached_sched, dict) and "schedule" in cached_sched:
+        if state.get("schedule_date") == today_date or not state.get("schedule_date"):
+            return cached_sched
+            
+    return {"schedule": None, "message": "No routine scheduled for today"}
 
 
 @app.post("/api/adherence/log", response_model=Dict[str, Any])
@@ -278,9 +270,23 @@ def log_adherence(request: AdherenceLogRequest, user_id: int = Depends(get_curre
 
 @app.get("/api/insights", response_model=Dict[str, Any])
 def get_dynamic_insights(user_id: int = Depends(get_current_user)):
+    """
+    Returns 6 concise Ayurvedic insights for node-based reasoning visualization.
+    Uses LLMGateway with bounded retries and guaranteed deterministic fallback so it never returns HTTP 500.
+    """
+    def _default_insights():
+        return {
+            "node-sleep": {"category": "Rest", "title": "Brahma Muhurta", "desc": "Wake near sunrise to align with natural circadian rhythm."},
+            "node-hrv": {"category": "Autonomic", "title": "Pranayama Breathing", "desc": "Nadi Shodhana breathing balances autonomic nervous tone."},
+            "node-vata": {"category": "Dosha", "title": "Vata Regulation", "desc": "Warm, grounding routines stabilize nervous volatility."},
+            "node-knowledge": {"category": "RAG", "title": "Classical Guidance", "desc": "Retrieved classical Ayurvedic guidelines for your constitution."},
+            "node-planner": {"category": "Agent", "title": "Dynamic Scheduling", "desc": "Adaptive routine generation based on constraints."},
+            "node-result": {"category": "Outcome", "title": "Ojas Preservation", "desc": "Sustained vital energy and metabolic balance."}
+        }
+
     try:
-        planner = DinacharyaPlannerAgent()
         state = db.get_user_state(user_id)
+        gateway = LLMGateway.get_instance()
         
         profile = DoshaMapper.generate_profile(
             user_id=str(user_id),
@@ -294,38 +300,47 @@ def get_dynamic_insights(user_id: int = Depends(get_current_user)):
         guidelines = kb.retrieve(profile, context, k=2)
         guidelines_text = "\n".join([f"- {g['text']}" for g in guidelines])
 
-        analysis_prompt = f"""
-Analyze the following user state and provide 6 concise Ayurvedic insights for a node-based reasoning visualization.
+        analysis_prompt = f"""Analyze the following user state and provide 6 concise Ayurvedic insights for a node-based reasoning visualization.
 - Profile: Vata {profile.prakriti.vata}, Pitta {profile.prakriti.pitta}, Kapha {profile.prakriti.kapha}
 - Imbalances: Vata Aggravated: {profile.vikriti_flags.vata_aggravated}
 - Guidelines: {guidelines_text}
 
 Return JSON with exactly 6 keys: 
 "node-sleep", "node-hrv", "node-vata", "node-knowledge", "node-planner", "node-result".
-Each must have: "category", "title", "desc".
-"""
-        chat_completion = planner.openai_client.chat.completions.create(
-            messages=[{"role": "system", "content": "You are a logical Ayurvedic analyzer. Output strict JSON."},
-                      {"role": "user", "content": analysis_prompt}],
-            model=DEFAULT_MODEL,
-            response_format={"type": "json_object"}
+Each must have: "category", "title", "desc"."""
+
+        insights, is_fallback = gateway.generate_structured_json(
+            messages=[
+                {"role": "system", "content": "You are a logical Ayurvedic analyzer. Output strict JSON only. Keep internal reasoning concise."},
+                {"role": "user", "content": analysis_prompt}
+            ],
+            max_tokens=2048,
+            fallback_fn=_default_insights
         )
-        
-        insights = json.loads(chat_completion.choices[0].message.content)
-        return {"insights": insights, "timestamp": time.time()}
+        return {"insights": insights, "timestamp": time.time(), "is_fallback": is_fallback}
 
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        logger.warning(f"get_dynamic_insights fallback triggered for user {user_id}: {e}")
+        return {"insights": _default_insights(), "timestamp": time.time(), "is_fallback": True}
+
 
 @app.post("/api/chat", response_model=Dict[str, Any])
 def chat_assistant(request: ChatRequest, user_id: int = Depends(get_current_user)):
+    """
+    Conversational Vaidya assistant powered by the centralized LLMGateway.
+    Gracefully handles null schedule state, provider timeouts, and cross-agent recalibrations.
+    """
     try:
         planner = DinacharyaPlannerAgent()
+        gateway = LLMGateway.get_instance()
         
-        # 1. Fetch Comprehensive User State
+        # 1. Fetch Comprehensive User State safely
         state = db.get_user_state(user_id)
         questionnaire = state.get("questionnaire_responses", {})
-        current_routine = state.get("last_schedule", {}).get("schedule", {})
+        
+        # Fix: Safely handle null last_schedule without crashing on None.get()
+        last_sched = state.get("last_schedule") or {}
+        current_routine = last_sched.get("schedule", {}) if isinstance(last_sched, dict) else {}
         adherence_score = state.get("adherence_score", 1.0)
         
         # Format Questionnaire for AI
@@ -336,11 +351,12 @@ def chat_assistant(request: ChatRequest, user_id: int = Depends(get_current_user
         # Format routine for AI
         routine_summary = "USER'S CURRENT SCHEDULE:\n"
         for block_name in ["morning_block", "midday_block", "evening_block"]:
-            practices = current_routine.get(block_name, [])
+            practices = current_routine.get(block_name, []) if isinstance(current_routine, dict) else []
             if practices:
                 routine_summary += f"{block_name.replace('_', ' ').upper()}:\n"
                 for p in practices:
-                    routine_summary += f"- {p['name']} ({p['time_slot']})\n"
+                    if isinstance(p, dict):
+                        routine_summary += f"- {p.get('name', 'Practice')} ({p.get('time_slot', 'Flexible')})\n"
 
         # Fetch persisted Vikriti
         current_vikriti = state.get("current_vikriti", {})
@@ -351,7 +367,7 @@ def chat_assistant(request: ChatRequest, user_id: int = Depends(get_current_user
         for idx, sym in enumerate(symptoms_list):
             symptoms_map[f"symptom_{idx}"] = sym
 
-        # 2. Perception: Generate profile (now using persisted telemetry!)
+        # 2. Perception: Generate profile
         profile = DoshaMapper.generate_profile(
             user_id=str(user_id), 
             questionnaire=questionnaire, 
@@ -367,9 +383,9 @@ def chat_assistant(request: ChatRequest, user_id: int = Depends(get_current_user
 
         system_prompt = (
             "You are a warm, wise traditional Ayurvedic physician (Vaidya).\n\n"
-            "YOUR TOOLS:\n"
+            "YOUR CONTEXT:\n"
             f"- SYSTEM CLOCK: The current time is {time.strftime('%Y-%m-%d %H:%M:%S')}.\n"
-            "- WELLNESS VAULT: You have direct access to the user's Assessment Data and Daily Schedule history.\n\n"
+            "- WELLNESS VAULT: Access to user's Assessment Data and Daily Schedule history.\n\n"
             f"{q_text}\n"
             f"{routine_summary}\n"
             "AUTHENTIC AYURVEDIC KNOWLEDGE BASE:\n" + guidelines_text +
@@ -378,7 +394,7 @@ def chat_assistant(request: ChatRequest, user_id: int = Depends(get_current_user
             "2. Reference specific assessment answers and current tasks.\n"
             "3. CRITICAL: If the user requests a timing change or routine adjustment, "
             "you MUST include the hidden tag [RECALIBRATE] at the end. This signals the Planner Agent.\n"
-            "4. Be concise and empathetic (max 3 short paragraphs)."
+            "4. Keep response under 3 concise, empathetic paragraphs."
         )
 
         messages = [{"role": "system", "content": system_prompt}]
@@ -389,25 +405,127 @@ def chat_assistant(request: ChatRequest, user_id: int = Depends(get_current_user
         db.save_chat_message(user_id, "user", request.message)
         messages.append({"role": "user", "content": request.message})
 
-        chat_completion = planner.openai_client.chat.completions.create(messages=messages, model=DEFAULT_MODEL, temperature=0.7, max_tokens=300)
-        full_response = chat_completion.choices[0].message.content
+        # Check if user message is an explicit acceptance of a prior proposal
+        user_msg_lower = request.message.lower().strip()
+        is_acceptance = any(term in user_msg_lower for term in [
+            "accept", "apply", "confirm", "yes, please", "yes please", "please do", 
+            "make the change", "update it", "looks good", "sounds good"
+        ]) or (user_msg_lower in ["yes", "y", "sure", "ok", "okay", "agreed", "done"])
+
+        last_assistant_msg = ""
+        for turn in reversed(db_history):
+            if turn.get("role") == "assistant":
+                last_assistant_msg = turn.get("content", "")
+                break
+
+        cached_sched = state.get("last_schedule")
+        today_date = datetime.now().strftime('%Y-%m-%d')
+        
+        # If user is accepting an existing proposal
+        if is_acceptance and last_assistant_msg and cached_sched and isinstance(cached_sched, dict) and "schedule" in cached_sched:
+            sched_root = cached_sched["schedule"]
+            all_practices = (
+                sched_root.get("morning_block", []) +
+                sched_root.get("midday_block", []) +
+                sched_root.get("evening_block", [])
+            )
+            p_names = [p.get("name", "") if isinstance(p, dict) else p.name for p in all_practices]
+            from src.planning.agent import extract_practice_time_updates, standardize_slot
+            updates = extract_practice_time_updates(last_assistant_msg, p_names)
+            
+            if updates:
+                try:
+                    from src.models import DinacharyaSchedule, Practice
+                    from src.safety.guardrails import ClinicalRuleEngine
+                    
+                    def clone_block(raw_block):
+                        res = []
+                        for item in raw_block:
+                            p_dict = item if isinstance(item, dict) else item.model_dump()
+                            p_name = p_dict.get("name", "")
+                            p_slot = updates.get(p_name, p_dict.get("time_slot", "Flexible"))
+                            res.append(Practice(
+                                name=p_name,
+                                time_slot=standardize_slot(p_slot),
+                                duration_minutes=int(p_dict.get("duration_minutes", 15)),
+                                description=p_dict.get("description", ""),
+                                rationale=p_dict.get("rationale", "")
+                            ))
+                        return res
+
+                    cand_morning = clone_block(sched_root.get("morning_block", []))
+                    cand_midday = clone_block(sched_root.get("midday_block", []))
+                    cand_evening = clone_block(sched_root.get("evening_block", []))
+
+                    candidate = DinacharyaSchedule(
+                        user_id=str(user_id),
+                        adherence_score=state.get("adherence_score", 1.0),
+                        routine_complexity=sched_root.get("routine_complexity", "Adaptive"),
+                        morning_block=cand_morning,
+                        midday_block=cand_midday,
+                        evening_block=cand_evening,
+                        timestamp=time.time()
+                    )
+
+                    validated = ClinicalRuleEngine.validate(candidate, profile)
+                    resp_data = {
+                        "schedule": validated.model_dump(),
+                        "dosha_profile": profile.model_dump(),
+                        "complexity_level": candidate.routine_complexity,
+                        "timestamp": time.time()
+                    }
+                    
+                    # Requirement 2 & 3: Save to canonical DB and confirm ONLY after write succeeds
+                    db.save_user_schedule(user_id, resp_data, today_date)
+                    
+                    confirm_text = (
+                        "✓ **Schedule Synchronized**: I have updated your daily routine in your persistent vault. "
+                        + ", ".join([f"**{k}** is now set to **{v}**" for k, v in updates.items()])
+                        + ". All other practices and fixed commitments remain preserved. You can view your updated routine now. 🙏"
+                    )
+                    db.save_chat_message(user_id, "assistant", confirm_text)
+                    
+                    return {
+                        "response": confirm_text,
+                        "proposed_schedule": resp_data["schedule"],
+                        "schedule_updated": True,
+                        "timestamp": time.time()
+                    }
+                except Exception as write_err:
+                    logger.error(f"Failed to persist accepted schedule change for user {user_id}: {write_err}")
+                    fail_text = "I encountered an error persisting your schedule update to the vault. Your routine was not modified. Please try again."
+                    db.save_chat_message(user_id, "assistant", fail_text)
+                    return {
+                        "response": fail_text,
+                        "proposed_schedule": None,
+                        "schedule_updated": False,
+                        "timestamp": time.time()
+                    }
+
+        # Execute chat completion via resilient LLMGateway
+        chat_res = gateway.create_chat_completion(
+            messages=messages,
+            max_tokens=2500,
+            temperature=0.7
+        )
+        full_response = chat_res.content.strip()
+        if not full_response:
+            full_response = (
+                "Namaste! Based on your constitutional assessment and classical Ayurvedic guidelines, "
+                "maintaining consistent wake times near Brahma Muhurta, nourishing meals during midday Agni, "
+                "and restorative evening practices are foundational. How can I help adapt your Dinacharya today? 🙏"
+            )
         
         # --- Cross-Agent Communication: Proposed Recalibration ---
         proposed_schedule = None
         if "[RECALIBRATE]" in full_response:
-            # Prepare clean context for the Planner
             clean_proposal = full_response.replace("[RECALIBRATE]", "").strip()
             planner_directive = f"USER REQUEST: {request.message}\nAGREED PROPOSAL: {clean_proposal}"
             
-            logger.info(f"Vaidya AI suggesting recalibration for user {user_id}. Relaying directive and context to Planner Agent.")
-            
-            # Use the clean response for the user regardless of planner outcome
+            logger.info(f"Vaidya AI suggesting recalibration for user {user_id}. Relaying directive to Planner Agent.")
             full_response = clean_proposal
             
-            # Attempt planner regeneration with a timeout so the chat response
-            # is never blocked by a slow NVIDIA NIM endpoint.
-            import concurrent.futures
-            RECALIBRATION_TIMEOUT_SECONDS = 15
+            from src.planning.agent import extract_practice_time_updates, standardize_slot
             
             def _run_planner():
                 today_date = datetime.now().strftime('%Y-%m-%d')
@@ -426,71 +544,231 @@ def chat_assistant(request: ChatRequest, user_id: int = Depends(get_current_user
                 )
                 candidate_schedule = planning_result["schedule"]
                 
-                # Enforce the same shared safety boundary for chat-driven recalibrations
                 validated = validate_and_format_schedule(
                     candidate_schedule, profile, complexity, adherence_score, [], user_id
                 )
                 return validated["schedule"]
             
             try:
+                # Run planner with sufficient time for Nemotron reasoning
+                import concurrent.futures
                 with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
                     future = executor.submit(_run_planner)
-                    proposed_schedule = future.result(timeout=RECALIBRATION_TIMEOUT_SECONDS)
-                    logger.info(f"Recalibration planner completed within timeout for user {user_id}.")
-            except concurrent.futures.TimeoutError:
-                logger.warning(f"Recalibration planner timed out after {RECALIBRATION_TIMEOUT_SECONDS}s for user {user_id}. Returning chat response without proposed schedule.")
-                proposed_schedule = None
+                    proposed_schedule = future.result(timeout=40)
+                    logger.info(f"Recalibration planner completed for user {user_id}.")
             except Exception as planner_err:
-                logger.warning(f"Recalibration planner failed for user {user_id}: {planner_err}. Returning chat response without proposed schedule.")
-                proposed_schedule = None
+                logger.warning(f"Recalibration planner fallback triggered for user {user_id}: {planner_err}.")
+                # Deterministic fallback directly applying directive to current schedule
+                curr = state.get("last_schedule")
+                if curr and isinstance(curr, dict) and "schedule" in curr:
+                    sched_root = curr["schedule"]
+                    all_p = (
+                        sched_root.get("morning_block", []) +
+                        sched_root.get("midday_block", []) +
+                        sched_root.get("evening_block", [])
+                    )
+                    p_names = [p.get("name", "") if isinstance(p, dict) else p.name for p in all_p]
+                    updates = extract_practice_time_updates(planner_directive, p_names)
+                    if updates:
+                        from src.models import DinacharyaSchedule, Practice
+                        from src.safety.guardrails import ClinicalRuleEngine
+                        def clone_b(raw_items):
+                            out = []
+                            for it in raw_items:
+                                d = it if isinstance(it, dict) else it.model_dump()
+                                nm = d.get("name", "")
+                                sl = updates.get(nm, d.get("time_slot", "Flexible"))
+                                out.append(Practice(
+                                    name=nm,
+                                    time_slot=standardize_slot(sl),
+                                    duration_minutes=int(d.get("duration_minutes", 15)),
+                                    description=d.get("description", ""),
+                                    rationale=d.get("rationale", "")
+                                ))
+                            return out
+                        cand = DinacharyaSchedule(
+                            user_id=str(user_id),
+                            adherence_score=state.get("adherence_score", 1.0),
+                            routine_complexity=sched_root.get("routine_complexity", "Adaptive"),
+                            morning_block=clone_b(sched_root.get("morning_block", [])),
+                            midday_block=clone_b(sched_root.get("midday_block", [])),
+                            evening_block=clone_b(sched_root.get("evening_block", [])),
+                            timestamp=time.time()
+                        )
+                        val = ClinicalRuleEngine.validate(cand, profile)
+                        proposed_schedule = val.model_dump()
 
         db.save_chat_message(user_id, "assistant", full_response)
         
         return {
             "response": full_response, 
             "proposed_schedule": proposed_schedule,
+            "schedule_updated": False,
             "timestamp": time.time()
         }
 
-    except openai.APITimeoutError:
-        logger.warning(f"Chat LLM timed out for user {user_id}. NVIDIA endpoint is slow.")
+    except Exception as e:
+        logger.error(f"Chat assistant fallback triggered for user {user_id}: {e}")
+        fallback_msg = (
+            "Namaste. I am currently experiencing a momentary delay in connecting to our full reasoning model. "
+            "Please rest assured your daily routine is preserved. For your constitution, continue focusing on warm hydration, "
+            "regular meal timings, and restorative rest. 🙏"
+        )
         return {
-            "response": "I apologize — my connection to the reasoning engine is experiencing delays right now. Please try again in a moment. 🙏",
+            "response": fallback_msg,
             "proposed_schedule": None,
             "timestamp": time.time()
         }
-    except Exception as e:
-        import traceback
-        traceback.print_exc()
-        raise HTTPException(status_code=500, detail=f"Chat assistant failed: {str(e)}")
+
+
+# --- Notifications Endpoints ---
+
+@app.get("/api/notifications", response_model=Dict[str, Any])
+def get_user_notifications_route(
+    unread_only: bool = False,
+    limit: int = 20,
+    user_id: int = Depends(get_current_user)
+):
+    """
+    Fetches persistent notifications (schedule changes, circumstance alerts, reminders).
+    """
+    notifs = db.get_user_notifications(user_id=user_id, limit=limit, unread_only=unread_only)
+    return {"notifications": notifs, "count": len(notifs)}
+
+
+@app.post("/api/notifications/{notification_id}/read", response_model=Dict[str, Any])
+def mark_notification_read_route(
+    notification_id: int,
+    user_id: int = Depends(get_current_user)
+):
+    """
+    Marks a user notification as read.
+    """
+    success = db.mark_notification_read(notification_id=notification_id, user_id=user_id)
+    return {"success": success, "notification_id": notification_id}
+
+
+# --- Agent Adaptation Endpoint ---
+
+@app.post("/api/agent/adapt", response_model=Dict[str, Any])
+def adapt_schedule_route(
+    request: Dict[str, Any],
+    user_id: int = Depends(get_current_user)
+):
+    """
+    Phase 5 Circumstance Adaptation endpoint.
+    Handles missed activities, calendar conflicts, fatigue/illness, task overrun, and priority shifts.
+    """
+    planner = DinacharyaPlannerAgent()
+    state = db.get_user_state(user_id)
+    
+    current_vikriti = state.get("current_vikriti", {})
+    telemetry = current_vikriti.get("telemetry", {})
+    symptoms_list = current_vikriti.get("symptoms", [])
+    symptoms_map = {f"sym_{i}": s for i, s in enumerate(symptoms_list)}
+
+    profile = DoshaMapper.generate_profile(
+        user_id=str(user_id),
+        questionnaire=state.get("questionnaire_responses", {}),
+        telemetry=telemetry,
+        symptoms=symptoms_map
+    )
+
+    calendar_events = request.get("calendar_events", [])
+    context = UserContext(
+        season="Balanced",
+        weather="Pleasant",
+        temperature_c=24.0,
+        calendar_events=calendar_events,
+        self_report_symptoms=symptoms_list
+    )
+
+    event_type = request.get("event_type", "circumstance_change")
+    event_data = request.get("event_data", {})
+    current_sched = state.get("last_schedule") or {}
+
+    adaptation_result = planner.adapt_schedule(
+        user_id=str(user_id),
+        current_schedule=current_sched,
+        event_type=event_type,
+        event_data=event_data,
+        profile=profile,
+        context=context,
+        adherence_score=state.get("adherence_score", 1.0)
+    )
+
+    # Convert schedule to dict for JSON serialization if present
+    if adaptation_result.get("schedule") is not None:
+        adaptation_result["schedule"] = adaptation_result["schedule"].model_dump()
+
+    return adaptation_result
 
 
 @app.post("/api/schedule/confirm")
 def confirm_schedule(request: Dict[str, Any], user_id: int = Depends(get_current_user)):
     try:
         schedule = request.get("schedule")
-        if not schedule:
+        if not schedule or not isinstance(schedule, dict):
             raise HTTPException(status_code=400, detail="No schedule provided")
         
         today_date = datetime.now().strftime('%Y-%m-%d')
-        # Re-fetch profile for the wrapper
         state = db.get_user_state(user_id)
+        current_vikriti = state.get("current_vikriti", {})
         profile = DoshaMapper.generate_profile(
             user_id=str(user_id),
             questionnaire=state.get("questionnaire_responses", {}),
-            telemetry={}, symptoms={}
+            telemetry=current_vikriti.get("telemetry", {}),
+            symptoms={f"sym_{i}": s for i, s in enumerate(current_vikriti.get("symptoms", []))}
         )
         
+        # Requirement 1: A schedule change must be validated before persistence
+        from src.models import DinacharyaSchedule, Practice
+        from src.safety.guardrails import ClinicalRuleEngine
+        from src.planning.agent import standardize_slot
+
+        def parse_raw_block(raw_items):
+            out = []
+            for item in raw_items:
+                if isinstance(item, Practice):
+                    out.append(item)
+                elif isinstance(item, dict):
+                    out.append(Practice(
+                        name=item.get("name", "Practice"),
+                        time_slot=standardize_slot(item.get("time_slot", "Flexible")),
+                        duration_minutes=int(item.get("duration_minutes", 15)),
+                        description=item.get("description", ""),
+                        rationale=item.get("rationale", "")
+                    ))
+            return out
+
+        candidate = DinacharyaSchedule(
+            user_id=str(user_id),
+            adherence_score=state.get("adherence_score", 1.0),
+            routine_complexity=schedule.get("routine_complexity", "Adaptive"),
+            morning_block=parse_raw_block(schedule.get("morning_block", [])),
+            midday_block=parse_raw_block(schedule.get("midday_block", [])),
+            evening_block=parse_raw_block(schedule.get("evening_block", [])),
+            timestamp=time.time()
+        )
+        
+        validated = ClinicalRuleEngine.validate(candidate, profile)
+
         response_data = {
-            "schedule": schedule,
+            "schedule": validated.model_dump(),
             "dosha_profile": profile.model_dump(),
-            "complexity_level": "Adaptive",
+            "complexity_level": candidate.routine_complexity,
             "timestamp": time.time()
         }
+        # Requirement 2 & 3: Save to canonical DB; confirm success ONLY after write succeeds
         db.save_user_schedule(user_id, response_data, today_date)
-        return {"status": "success"}
+        logger.info(f"Successfully persisted confirmed schedule for user {user_id}")
+        return {"status": "success", "schedule": response_data["schedule"]}
+    except HTTPException:
+        raise
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        logger.error(f"Error persisting confirmed schedule for user {user_id}: {e}")
+        # Requirement 4: If persistence fails, return explicit failure
+        raise HTTPException(status_code=500, detail=f"Failed to persist schedule: {str(e)}")
 
 
 @app.get("/api/chat/history")

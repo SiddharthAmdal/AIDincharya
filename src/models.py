@@ -93,6 +93,7 @@ class ScheduleGenerateRequest(BaseModel):
     questionnaire_responses: Optional[Dict[str, str]] = None
     wearable_telemetry_7d: Optional[Dict[str, float]] = None
     context: UserContext
+    force_regen: Optional[bool] = False
 
 
 class AdherenceLogRequest(BaseModel):
