@@ -166,6 +166,20 @@ def mutate_user_schedule(
         idempotency_key=idemp_key
     )
 
+    # Decoupled Web Push delivery (failure never rolls back DB persistence)
+    try:
+        from src.notifications.push_service import send_push_notification_to_user
+        send_push_notification_to_user(
+            user_id=user_id,
+            title="Ayurvedic Routine Synchronized",
+            body=f"Schedule updated: {', '.join(matched_practices)} moved to new time.",
+            url="/routine",
+            tag=idemp_key,
+            extra_data={"event_type": "adaptation_confirmed", "activities": matched_practices}
+        )
+    except Exception as push_err:
+        logger.warning(f"Web Push delivery attempt failed for user {user_id} (in-app preserved): {push_err}")
+
     return {
         "success": True,
         "schedule": canonical_data["schedule"],
