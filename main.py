@@ -111,7 +111,7 @@ def register(req: UserAuthRequest):
     if not user_id:
         raise HTTPException(status_code=400, detail="Username already exists")
     token = db.create_session(user_id)
-    return {"token": token, "has_completed_onboarding": False}
+    return {"token": token, "has_completed_onboarding": False, "username": req.username}
 
 @app.post("/api/auth/login", response_model=AuthResponse)
 def login(req: UserAuthRequest):
@@ -120,7 +120,7 @@ def login(req: UserAuthRequest):
         raise HTTPException(status_code=401, detail="Invalid credentials")
     token = db.create_session(user_id)
     state = db.get_user_state(user_id)
-    return {"token": token, "has_completed_onboarding": state.get("has_completed_onboarding", False)}
+    return {"token": token, "has_completed_onboarding": state.get("has_completed_onboarding", False), "username": req.username}
 
 @app.post("/api/auth/logout")
 def logout(authorization: Optional[str] = Header(None)):

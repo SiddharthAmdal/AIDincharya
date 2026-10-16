@@ -188,7 +188,7 @@
 <header class="flex justify-between items-end">
 <div>
 <p class="font-body-lg text-body-lg text-on-surface-variant mb-2">Good morning,</p>
-<h2 class="font-display-lg-mobile md:font-display-lg text-display-lg-mobile md:text-display-lg text-primary">Welcome back, Kirrthana</h2>
+<h2 id="dashboard-user-greeting" class="font-display-lg-mobile md:font-display-lg text-display-lg-mobile md:text-display-lg text-primary">Welcome back, Friend</h2>
 </div>
 <div class="hidden md:flex items-center gap-4">
 <button id="nav-notifications-btn" aria-label="Notifications" class="p-2 rounded-full bg-surface-container hover:bg-surface-container-high transition-colors text-on-surface-variant relative">
@@ -250,7 +250,7 @@
 <span class="material-symbols-outlined text-tertiary-container" data-icon="task_alt">task_alt</span>
 </div>
 <div class="flex items-baseline gap-2 relative z-10">
-<span class="font-headline-lg text-headline-lg text-primary">95%</span>
+<span id="dashboard-adherence-value" class="font-headline-lg text-headline-lg text-primary">95%</span>
 </div>
 </div>
 <div class="flex gap-1 relative z-10 mt-auto">
@@ -270,10 +270,10 @@
 <span class="material-symbols-outlined text-primary-container" data-icon="all_inclusive">all_inclusive</span>
 </div>
 <div class="flex flex-col gap-1 relative z-10">
-<span class="font-headline-md text-headline-md text-primary">Vata Aggravated</span>
+<span id="dashboard-dosha-title" class="font-headline-md text-headline-md text-primary">Vata Aggravated</span>
 </div>
 </div>
-<div class="flex gap-2 relative z-10 mt-auto">
+<div id="dashboard-dosha-tags" class="flex gap-2 relative z-10 mt-auto flex-wrap">
 <span class="px-3 py-1 rounded-full bg-secondary-container text-on-secondary-container font-label-sm text-label-sm">Grounding</span>
 <span class="px-3 py-1 rounded-full bg-surface-container text-on-surface-variant font-label-sm text-label-sm">Warmth</span>
 </div>
@@ -285,35 +285,12 @@
 <div class="lg:col-span-2 glass-card rounded-3xl p-8 flex flex-col">
 <div class="flex justify-between items-center mb-6">
 <h3 class="font-headline-md text-headline-md text-primary">Today's Focus</h3>
-<button class="text-secondary hover:text-primary transition-colors font-label-md text-label-md flex items-center gap-1">
+<button id="view-full-routine-btn" class="text-secondary hover:text-primary transition-colors font-label-md text-label-md flex items-center gap-1 cursor-pointer">
                         View Full Routine <span class="material-symbols-outlined text-[18px]" data-icon="arrow_forward">arrow_forward</span>
 </button>
 </div>
 <div id="dashboard-tasks-container" class="flex flex-col gap-4">
-<!-- Task 1 -->
-<div class="flex items-center gap-4 p-4 rounded-2xl border border-outline-variant/20 bg-surface-container-lowest/50 hover:bg-surface-container-lowest transition-colors cursor-pointer group">
-<div class="w-12 h-12 rounded-full bg-secondary-container flex items-center justify-center text-on-secondary-container shrink-0">
-<span class="material-symbols-outlined" data-icon="self_improvement">self_improvement</span>
-</div>
-<div class="flex-grow">
-<h4 class="font-label-md text-label-md text-on-surface mb-1 group-hover:text-primary transition-colors">15m Grounding Meditation</h4>
-<p class="font-body-sm text-body-sm text-on-surface-variant">To pacify active Vata energy.</p>
-</div>
-<div class="w-6 h-6 rounded-full border-2 border-outline-variant flex items-center justify-center group-hover:border-primary transition-colors shrink-0">
-</div>
-</div>
-<!-- Task 2 -->
-<div class="flex items-center gap-4 p-4 rounded-2xl border border-outline-variant/20 bg-surface-container-lowest/50 hover:bg-surface-container-lowest transition-colors cursor-pointer group">
-<div class="w-12 h-12 rounded-full bg-primary-container text-on-primary-container flex items-center justify-center shrink-0">
-<span class="material-symbols-outlined" data-icon="local_drink">local_drink</span>
-</div>
-<div class="flex-grow">
-<h4 class="font-label-md text-label-md text-on-surface mb-1 group-hover:text-primary transition-colors">Warm Lemon Water</h4>
-<p class="font-body-sm text-body-sm text-on-surface-variant">Hydration and gentle digestive stimulation.</p>
-</div>
-<div class="w-6 h-6 rounded-full border-2 border-outline-variant flex items-center justify-center group-hover:border-primary transition-colors shrink-0">
-</div>
-</div>
+<!-- Task items loaded dynamically by app.js -->
 </div>
 </div>
 <!-- Insight Highlight -->
@@ -324,14 +301,14 @@
 <span class="material-symbols-outlined" data-icon="auto_awesome">auto_awesome</span>
 <span class="font-label-sm text-label-sm uppercase tracking-widest">AI Insight</span>
 </div>
-<h3 class="font-headline-md text-headline-md mb-4 text-white">Your sleep architecture is optimizing.</h3>
-<p class="font-body-md text-body-md text-primary-fixed-dim/90">
+<h3 id="dashboard-insight-title" class="font-headline-md text-headline-md mb-4 text-white">Your sleep architecture is optimizing.</h3>
+<p id="dashboard-insight-desc" class="font-body-md text-body-md text-primary-fixed-dim/90">
                         By consistently shifting your dinner 45 minutes earlier, your Deep Sleep phase has increased by 18% this week. This directly correlates to your lowered Vata symptoms.
                     </p>
 </div>
 <div class="mt-8 relative z-10">
-<button class="w-full py-3 px-6 rounded-xl border border-primary-fixed text-primary-fixed hover:bg-primary-fixed hover:text-primary transition-colors font-label-md text-label-md text-center">
-                        View Sleep Data
+<button id="view-sleep-data-btn" class="w-full py-3 px-6 rounded-xl border border-primary-fixed text-primary-fixed hover:bg-primary-fixed hover:text-primary transition-colors font-label-md text-label-md text-center cursor-pointer">
+                        View Biometric Reasoning
                     </button>
 </div>
 </div>
@@ -339,28 +316,28 @@
 </main>
 <!-- Floating AI Chat Widget -->
 <div class="fixed bottom-margin-mobile md:bottom-margin-desktop right-margin-mobile md:right-margin-desktop z-50">
-<button aria-label="Open AI Assistant" class="w-16 h-16 rounded-full bg-surface-container-lowest text-primary shadow-[0_8px_30px_rgba(0,0,0,0.12)] flex items-center justify-center border border-outline-variant/20 hover:scale-105 transition-transform duration-300 focus:outline-none focus:ring-2 focus:ring-primary focus:ring-offset-2 focus:ring-offset-background">
+<button id="floating-ai-assistant-btn" aria-label="Open AI Assistant" class="w-16 h-16 rounded-full bg-surface-container-lowest text-primary shadow-[0_8px_30px_rgba(0,0,0,0.12)] flex items-center justify-center border border-outline-variant/20 hover:scale-105 transition-transform duration-300 focus:outline-none focus:ring-2 focus:ring-primary focus:ring-offset-2 focus:ring-offset-background cursor-pointer">
 <span class="material-symbols-outlined text-3xl" data-icon="forum">forum</span>
 <span class="absolute top-0 right-0 w-4 h-4 bg-secondary rounded-full border-2 border-surface-container-lowest"></span>
 </button>
 </div>
 <!-- Mobile Bottom Navigation (Visible only on mobile) -->
 <nav aria-label="Mobile Navigation" class="md:hidden fixed bottom-0 w-full glass-card border-t border-outline-variant/20 flex justify-around items-center h-20 z-40 pb-safe">
-<a aria-current="page" class="flex flex-col items-center gap-1 text-primary p-2" href="#">
+<a aria-current="page" class="flex flex-col items-center gap-1 text-primary p-2" href="/dashboard">
 <span class="material-symbols-outlined fill" data-icon="dashboard">dashboard</span>
 <span class="font-label-sm text-label-sm">Dashboard</span>
 </a>
-<a aria-label="Routine" class="flex flex-col items-center gap-1 text-on-surface-variant p-2" href="#">
+<a aria-label="Routine" class="flex flex-col items-center gap-1 text-on-surface-variant p-2 hover:text-primary" href="/routine">
 <span class="material-symbols-outlined" data-icon="event_note">event_note</span>
 <span class="font-label-sm text-label-sm">Routine</span>
 </a>
-<a aria-label="Insights" class="flex flex-col items-center gap-1 text-on-surface-variant p-2" href="#">
+<a aria-label="Insights" class="flex flex-col items-center gap-1 text-on-surface-variant p-2 hover:text-primary" href="/reasoning">
 <span class="material-symbols-outlined" data-icon="psychology">psychology</span>
 <span class="font-label-sm text-label-sm">Insights</span>
 </a>
-<a aria-label="Profile" class="flex flex-col items-center gap-1 text-on-surface-variant p-2" href="#">
-<span class="material-symbols-outlined" data-icon="account_circle">account_circle</span>
-<span class="font-label-sm text-label-sm">Profile</span>
+<a id="mobile-nav-logout" aria-label="Profile" class="flex flex-col items-center gap-1 text-on-surface-variant p-2 hover:text-primary cursor-pointer" href="/login">
+<span class="material-symbols-outlined" data-icon="logout">logout</span>
+<span class="font-label-sm text-label-sm">Log Out</span>
 </a>
 </nav>
 

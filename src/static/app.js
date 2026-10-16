@@ -384,25 +384,184 @@ async function showRecalibrationFlowchart(proposedSchedule) {
 
 async function loadDashboardData() {
     const container = document.getElementById('dashboard-tasks-container');
-    if (!container || !window.location.pathname.includes('/dashboard')) return;
+    if (!window.location.pathname.includes('/dashboard')) return;
+
+    // Wire Dashboard Action Buttons
+    const viewRoutineBtn = document.getElementById('view-full-routine-btn');
+    if (viewRoutineBtn) viewRoutineBtn.onclick = () => window.location.href = '/routine';
+
+    const viewSleepBtn = document.getElementById('view-sleep-data-btn');
+    if (viewSleepBtn) viewSleepBtn.onclick = () => window.location.href = '/reasoning';
+
+    const fabBtn = document.getElementById('floating-ai-assistant-btn');
+    if (fabBtn) fabBtn.onclick = () => window.location.href = '/reasoning';
+
+    const mobileLogout = document.getElementById('mobile-nav-logout');
+    if (mobileLogout) mobileLogout.onclick = (e) => { e.preventDefault(); logout(); };
+
     try {
-        container.innerHTML = `<div class="p-8 text-center animate-pulse italic opacity-60">Syncing Wellness Vault...</div>`;
-        const data = await getSchedule();
-        if (!data || !data.schedule) return;
+        if (container) {
+            container.innerHTML = `<div class="p-8 text-center animate-pulse italic opacity-60">Syncing Wellness Vault...</div>`;
+        }
+
+        // Parallel fetch for schedule, user state, and insights
+        const [data, stateRes, insightsRes] = await Promise.all([
+            getSchedule(),
+            authenticatedFetch(`${API_BASE}/user/state`),
+            authenticatedFetch(`${API_BASE}/insights`).catch(() => null)
+        ]);
+
+        const state = (stateRes && stateRes.ok) ? await stateRes.json() : {};
+
+        // 1. Update User Greeting dynamically
+        const greetingEl = document.getElementById('dashboard-user-greeting');
+        if (greetingEl) {
+            const rawName = state.username || localStorage.getItem('dinacharya_username') || 'Friend';
+            const displayName = rawName.charAt(0).toUpperCase() + rawName.slice(1);
+            greetingEl.innerText = `Welcome back, ${displayName}`;
+        }
+
+        // 2. Update Adherence Score dynamically
+        const adherenceEl = document.getElementById('dashboard-adherence-value');
+        if (adherenceEl && state.adherence_score !== undefined) {
+            const pct = Math.round(state.adherence_score * 100);
+            adherenceEl.innerText = `${pct}%`;
+        }
+
+        // 3. Update Current Dosha & Tags dynamically
+        const doshaTitleEl = document.getElementById('dashboard-dosha-title');
+        const doshaTagsEl = document.getElementById('dashboard-dosha-tags');
+        if (data && data.dosha_profile) {
+            const profile = data.dosha_profile;
+            const flags = profile.vikriti_flags || {};
+            const p = profile.prakriti || {};
+
+            let doshaTitle = "Vata-Pitta Balance";
+            let tags = ["Grounding", "Equilibrium"];
+
+            if (flags.has_fever) {
+                doshaTitle = "Nava Jwara (Fever)";
+                tags = ["Deep Rest", "Hydration", "No Oil"];
+            } else if (flags.vata_aggravated && flags.pitta_aggravated) {
+                doshaTitle = "Vata-Pitta Elevated";
+                tags = ["Grounding", "Cooling"];
+            } else if (flags.vata_aggravated) {
+                doshaTitle = "Vata Aggravated";
+                tags = ["Grounding", "Warmth", "Snigdha"];
+            } else if (flags.pitta_aggravated) {
+                doshaTitle = "Pitta Aggravated";
+                tags = ["Cooling", "Calming", "Moderation"];
+            } else if (flags.kapha_aggravated) {
+                doshaTitle = "Kapha Aggravated";
+                tags = ["Stimulating", "Light", "Movement"];
+            } else if (p.vata || p.pitta || p.kapha) {
+                const maxD = Object.entries({ Vata: p.vata || 0, Pitta: p.pitta || 0, Kapha: p.kapha || 0 }).sort((a,b) => b[1] - a[1])[0][0];
+                doshaTitle = `${maxD} Dominant`;
+                tags = [maxD === "Vata" ? "Warmth" : maxD === "Pitta" ? "Cooling" : "Lightness", "Circadian Sync"];
+            }
+
+            if (doshaTitleEl) doshaTitleEl.innerText = doshaTitle;
+            if (doshaTagsEl) {
+                doshaTagsEl.innerHTML = tags.map((t, idx) => `
+                    <span class="px-3 py-1 rounded-full ${idx === 0 ? 'bg-secondary-container text-on-secondary-container' : 'bg-surface-container text-on-surface-variant'} font-label-sm text-label-sm">${t}</span>
+                `).join('');
+            }
+        }
+
+        // 4. Update Dynamic Insight Highlight from /api/insights
+        if (insightsRes && insightsRes.ok) {
+            try {
+                const insightData = await insightsRes.json();
+                const insights = insightData.insights || {};
+                const topNode = insights['node-result'] || insights['node-vata'] || insights['node-sleep'];
+                if (topNode) {
+                    const titleEl = document.getElementById('dashboard-insight-title');
+                    const descEl = document.getElementById('dashboard-insight-desc');
+                    if (titleEl && topNode.title) titleEl.innerText = topNode.title;
+                    if (descEl && topNode.desc) descEl.innerText = topNode.desc;
+                }
+            } catch(e) {}
+        }
+
+        // 5. Populate Today's Focus with real upcoming tasks across morning/midday/evening
+        if (!container) return;
+        if (!data || !data.schedule) {
+            container.innerHTML = `<p class="p-4 text-center opacity-60">Routine ready to be configured.</p>`;
+            return;
+        }
+
         container.innerHTML = '';
-        const tasks = data.schedule.morning_block || [];
-        if (tasks.length === 0) { container.innerHTML = `<p class="p-4 text-center opacity-60">Block complete.</p>`; return; }
-        tasks.slice(0,3).forEach(task => {
+        const allTasks = [
+            ...(data.schedule.morning_block || []),
+            ...(data.schedule.midday_block || []),
+            ...(data.schedule.evening_block || [])
+        ];
+
+        if (allTasks.length === 0) {
+            container.innerHTML = `<p class="p-4 text-center opacity-60">All practices for today complete.</p>`;
+            return;
+        }
+
+        // Display up to 4 upcoming tasks
+        const displayTasks = allTasks.slice(0, 4);
+        displayTasks.forEach(task => {
+            const taskName = task.name || task.activity || 'Practice';
+            const taskSlot = task.time_slot || 'Flexible';
+            const taskDesc = task.description || task.rationale || 'Ayurvedic daily habit';
+
             const div = document.createElement('div');
-            div.className = 'flex items-center justify-between p-5 rounded-2xl border border-outline-variant/10 bg-white hover:shadow-md cursor-pointer transition-all';
-            div.onclick = async () => {
-                const res = await authenticatedFetch(`${API_BASE}/adherence/log`, { method: 'POST', body: JSON.stringify({ user_id: "current", completed_practices: [task.name], recommended_practices: [] }) });
-                if (res && res.ok) { sessionStorage.removeItem('schedule_cache'); loadDashboardData(); }
+            div.className = 'flex items-center gap-4 p-4 rounded-2xl border border-outline-variant/20 bg-surface-container-lowest/50 hover:bg-surface-container-lowest transition-all cursor-pointer group';
+
+            div.innerHTML = `
+                <div class="w-12 h-12 rounded-full bg-secondary-container flex items-center justify-center text-on-secondary-container shrink-0 group-hover:scale-105 transition-transform">
+                    <span class="material-symbols-outlined" data-icon="spa">spa</span>
+                </div>
+                <div class="flex-grow">
+                    <div class="flex items-center gap-2 mb-1">
+                        <h4 class="font-label-md text-label-md text-on-surface group-hover:text-primary transition-colors">${taskName}</h4>
+                        <span class="text-[10px] uppercase font-bold text-primary/70 bg-primary/5 px-2 py-0.5 rounded">${taskSlot}</span>
+                    </div>
+                    <p class="font-body-sm text-body-sm text-on-surface-variant line-clamp-1">${taskDesc}</p>
+                </div>
+                <button class="task-check-btn w-8 h-8 rounded-full border-2 border-outline-variant flex items-center justify-center hover:border-primary hover:bg-primary/5 transition-all shrink-0" title="Mark as Completed">
+                    <span class="material-symbols-outlined text-[16px] text-primary opacity-0 group-hover:opacity-60 transition-opacity">check</span>
+                </button>
+            `;
+
+            const checkBtn = div.querySelector('.task-check-btn');
+            const checkIcon = div.querySelector('.task-check-btn span');
+
+            const handleComplete = async (e) => {
+                e.stopPropagation();
+                // Visual feedback immediately
+                checkBtn.classList.add('bg-primary', 'border-primary', 'text-on-primary');
+                checkIcon.classList.remove('opacity-0', 'text-primary');
+                checkIcon.classList.add('opacity-100', 'text-white');
+                div.style.opacity = '0.5';
+                div.style.textDecoration = 'line-through';
+                showToast(`✓ Completed ${taskName}`);
+
+                try {
+                    const res = await authenticatedFetch(`${API_BASE}/adherence/log`, {
+                        method: 'POST',
+                        body: JSON.stringify({ user_id: "current", completed_practices: [taskName], recommended_practices: [] })
+                    });
+                    if (res && res.ok) {
+                        sessionStorage.removeItem('schedule_cache');
+                        setTimeout(() => loadDashboardData(), 600);
+                    }
+                } catch(err) {
+                    console.error("Adherence log error:", err);
+                }
             };
-            div.innerHTML = `<div class="flex items-center gap-4"><div class="w-10 h-10 rounded-xl bg-primary/5 text-primary flex items-center justify-center"><span class="material-symbols-outlined">spa</span></div><div><p class="font-bold text-on-surface">${task.name}</p><p class="text-[11px] opacity-60 uppercase">${task.time_slot}</p></div></div>`;
+
+            checkBtn.onclick = handleComplete;
+            div.onclick = handleComplete;
+
             container.appendChild(div);
         });
-    } catch(e) { console.error(e); }
+
+    } catch(e) { console.error("loadDashboardData error:", e); }
 }
 
 async function loadRoutineData(forceRefresh = false) {
@@ -544,7 +703,11 @@ function initApp() {
             const p = document.getElementById('password').value;
             const res = await fetch(`${API_BASE}/auth/login`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ username: u, password: p }) });
             const data = await res.json();
-            if (res.ok) { setToken(data.token); window.location.href = data.has_completed_onboarding ? '/dashboard' : '/onboarding'; }
+            if (res.ok) { 
+                setToken(data.token); 
+                if (data.username || u) localStorage.setItem('dinacharya_username', data.username || u);
+                window.location.href = data.has_completed_onboarding ? '/dashboard' : '/onboarding'; 
+            }
             else showToast("Invalid credentials");
         };
     }
@@ -567,8 +730,35 @@ function initApp() {
             const p = document.getElementById('password').value;
             const res = await fetch(`${API_BASE}/auth/register`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ username: u, password: p }) });
             const data = await res.json();
-            if (res.ok) { setToken(data.token); window.location.href = '/onboarding'; }
+            if (res.ok) { 
+                setToken(data.token); 
+                if (data.username || u) localStorage.setItem('dinacharya_username', data.username || u);
+                window.location.href = '/onboarding'; 
+            }
             else showToast("Registration failed");
+        };
+    }
+
+    // Wire Auxiliary & Informational Buttons
+    document.querySelectorAll('a[href="#"]').forEach(a => {
+        if (a.innerText.includes('Support')) {
+            a.onclick = (e) => {
+                e.preventDefault();
+                showToast("Clinical Support: Ask questions directly to Vaidya AI in Chat.");
+            };
+        } else if (a.innerText.includes('Privacy') || a.innerText.includes('Terms')) {
+            a.onclick = (e) => {
+                e.preventDefault();
+                showToast("Data Vault: All health telemetry is stored locally in SQLite.");
+            };
+        }
+    });
+
+    const attachBtn = document.querySelector('button[data-icon="attachment"]')?.closest('button') || document.querySelector('button:has(span[data-icon="attachment"])');
+    if (attachBtn) {
+        attachBtn.onclick = (e) => {
+            e.preventDefault();
+            showToast("Biometric Sync: Smart sensor baseline stream is active.");
         };
     }
 

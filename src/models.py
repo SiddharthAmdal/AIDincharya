@@ -84,6 +84,7 @@ class UserAuthRequest(BaseModel):
 class AuthResponse(BaseModel):
     token: str
     has_completed_onboarding: bool
+    username: Optional[str] = None
 
 class QuestionnaireRequest(BaseModel):
     responses: Dict[str, str]
