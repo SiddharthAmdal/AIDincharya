@@ -468,6 +468,9 @@ def propose_schedule_adaptation(
     Validates a proposed schedule adaptation against safety rules before committing.
     Enforces that proposals require explicit user confirmation before mutating vault state.
     """
+    if not affected_activity or not isinstance(affected_activity, str) or not affected_activity.strip():
+        return {"valid": False, "error": "Missing required argument 'affected_activity'"}
+
     valid_change_types = {"reschedule", "skip", "shorten", "substitute"}
     if change_type not in valid_change_types:
         return {"valid": False, "error": f"Invalid change_type '{change_type}'. Must be one of {valid_change_types}"}

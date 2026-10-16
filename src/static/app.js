@@ -442,16 +442,28 @@ function initWebPush() {
     checkWebPushStatus();
 }
 
-async function authenticatedFetch(url, options = {}) {
+async function authenticatedFetch(url, options = {}, timeoutMs = 35000) {
     const token = getToken();
     if (!token && !url.includes('/auth/')) { window.location.href = '/login'; return null; }
     const headers = { 'Content-Type': 'application/json', ...options.headers };
     if (token) headers['Authorization'] = `Bearer ${token}`;
+    
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), timeoutMs);
     try {
-        const res = await fetch(url, { ...options, headers });
+        const res = await fetch(url, { ...options, headers, signal: controller.signal });
+        clearTimeout(timer);
         if (res.status === 401) { logout(); return null; }
         return res;
-    } catch(e) { console.error("Fetch failed:", e); return null; }
+    } catch(e) { 
+        clearTimeout(timer);
+        if (e.name === 'AbortError') {
+            console.error(`Request to ${url} timed out after ${timeoutMs}ms`);
+        } else {
+            console.error("Fetch failed:", e);
+        }
+        return null; 
+    }
 }
 
 // --- Hybrid Caching Layer ---
@@ -759,10 +771,10 @@ async function loadInsightsData() {
                 const indicator = createTypingIndicator();
                 chatHistory.appendChild(indicator);
                 chatHistory.scrollTop = chatHistory.scrollHeight;
-                const chatRes = await authenticatedFetch(`${API_BASE}/chat`, { method: 'POST', body: JSON.stringify({ message: msg }) });
-                if (chatRes) {
+                const chatRes = await authenticatedFetch(`${API_BASE}/chat`, { method: 'POST', body: JSON.stringify({ message: msg }) }, 50000);
+                indicator.remove();
+                if (chatRes && chatRes.ok) {
                     const chatData = await chatRes.json();
-                    indicator.remove();
                     await typeMessage(chatHistory, chatData.response);
                     if (chatData.schedule_updated && chatData.proposed_schedule) {
                         latestScheduleVersion++;
@@ -783,7 +795,10 @@ async function loadInsightsData() {
                             loadRoutineData(); 
                         }
                     }
-                } else { indicator.remove(); }
+                } else {
+                    await typeMessage(chatHistory, "Namaste. I am currently experiencing high network latency connecting to the reasoning cluster. Your routine remains safe and preserved. Please try again shortly. 🙏");
+                    showToast("Connection timed out. Please retry.");
+                }
             };
         }
     } catch(e) { console.error(e); }

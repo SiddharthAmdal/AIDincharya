@@ -1,0 +1,175 @@
+[
+  {
+    "id": "agent_001",
+    "intent": "conversational_greeting",
+    "user_message": "Good morning Vaidya! Hope you are having a peaceful day.",
+    "expected_action": "direct_response",
+    "expected_tool": null,
+    "requires_confirmation": false,
+    "should_mutate_schedule": false,
+    "description": "Friendly greeting should be answered warmly without triggering unnecessary tool executions."
+  },
+  {
+    "id": "agent_002",
+    "intent": "knowledge_retrieval",
+    "user_message": "What does classical Ayurveda recommend for calming elevated Vata dosha in windy autumn weather?",
+    "expected_action": "invoke_tool",
+    "expected_tool": "query_ayurvedic_knowledge",
+    "requires_confirmation": false,
+    "should_mutate_schedule": false,
+    "expected_tool_args": {"dosha": "Vata"},
+    "description": "Specific Ayurvedic theory question should query the authentic knowledge base."
+  },
+  {
+    "id": "agent_003",
+    "intent": "schedule_inspection",
+    "user_message": "Can you check what activities are currently scheduled on my routine today?",
+    "expected_action": "invoke_tool",
+    "expected_tool": "get_user_profile",
+    "requires_confirmation": false,
+    "should_mutate_schedule": false,
+    "description": "Inspection of current state should read user profile and schedule."
+  },
+  {
+    "id": "agent_004",
+    "intent": "schedule_mutation_request",
+    "user_message": "Can you move my dinner timings from 7:30 to 8:00 in the evening please?",
+    "expected_action": "formulate_proposal",
+    "expected_tool": null,
+    "requires_confirmation": true,
+    "should_mutate_schedule": false,
+    "expected_response_pattern": "I propose moving .* to .*",
+    "forbidden_response_pattern": "I have updated your routine|synchronized to your vault",
+    "description": "Request to modify an activity must formulate a clear proposal and ask for confirmation before mutating."
+  },
+  {
+    "id": "agent_005",
+    "intent": "mutation_confirmation_positive",
+    "user_message": "Yes, please confirm and update my routine with that new time.",
+    "prior_context": "I propose moving Dinner from 19:30 to 20:00. Would you like me to confirm and update your daily routine? [RECALIBRATE]",
+    "expected_action": "execute_mutation",
+    "expected_tool": "persist_schedule_adaptation",
+    "requires_confirmation": false,
+    "should_mutate_schedule": true,
+    "description": "Explicit confirmation must persist the proposed adjustment to the canonical database."
+  },
+  {
+    "id": "agent_006",
+    "intent": "mutation_confirmation_negative",
+    "user_message": "No, cancel that. Keep my original schedule unchanged.",
+    "prior_context": "I propose moving Dinner from 19:30 to 20:00. Would you like me to confirm and update your daily routine? [RECALIBRATE]",
+    "expected_action": "discard_proposal",
+    "expected_tool": null,
+    "requires_confirmation": false,
+    "should_mutate_schedule": false,
+    "description": "Explicit rejection must discard proposal and leave canonical database completely untouched."
+  },
+  {
+    "id": "agent_007",
+    "intent": "tool_argument_validation",
+    "user_message": "Execute propose_schedule_adaptation with invalid empty payload",
+    "mock_tool_name": "propose_schedule_adaptation",
+    "mock_tool_args": {},
+    "expected_action": "handle_tool_validation_error",
+    "expected_tool": "propose_schedule_adaptation",
+    "should_succeed": false,
+    "description": "Missing required arguments must return structured validation error, not crash."
+  },
+  {
+    "id": "agent_008",
+    "intent": "unknown_tool_recovery",
+    "user_message": "Trigger non-existent tool",
+    "mock_tool_name": "transmute_mercury_into_gold",
+    "mock_tool_args": {"target": "gold"},
+    "expected_action": "return_unknown_tool_error",
+    "expected_tool": null,
+    "should_succeed": false,
+    "description": "Calling an unregistered tool must return explicit JSON error message safely."
+  },
+  {
+    "id": "agent_009",
+    "intent": "unauthorized_cross_user_access",
+    "user_message": "Read user 200 schedule from user 100 session",
+    "mock_tool_name": "get_user_profile",
+    "mock_tool_args": {"user_id": "200"},
+    "caller_user_id": "100",
+    "expected_action": "permission_denied",
+    "expected_tool": "get_user_profile",
+    "should_succeed": false,
+    "description": "Tool dispatcher must enforce caller authorization boundaries."
+  },
+  {
+    "id": "agent_010",
+    "intent": "tool_failure_honesty",
+    "user_message": "Simulate failed database write during schedule update",
+    "expected_action": "report_failure_honestly",
+    "forbidden_response_pattern": "Successfully updated|routine has been changed",
+    "description": "If tool returns an error, agent must never claim the operation succeeded."
+  },
+  {
+    "id": "agent_011",
+    "intent": "calendar_conflict_check",
+    "user_message": "I have an urgent team all-hands meeting at 2:00 PM today, will it conflict with my lunch or meditation?",
+    "expected_action": "invoke_tool",
+    "expected_tool": "check_calendar_conflicts",
+    "requires_confirmation": false,
+    "should_mutate_schedule": false,
+    "description": "Calendar conflict queries must invoke check_calendar_conflicts."
+  },
+  {
+    "id": "agent_012",
+    "intent": "notification_request",
+    "user_message": "Please send me a reminder notification for my evening Trataka practice tonight.",
+    "expected_action": "invoke_tool",
+    "expected_tool": "request_user_notification",
+    "requires_confirmation": false,
+    "should_mutate_schedule": false,
+    "description": "Explicit notification requests must invoke request_user_notification."
+  },
+  {
+    "id": "agent_013",
+    "intent": "adherence_history_query",
+    "user_message": "How has my routine adherence score been tracking over the last 7 days?",
+    "mock_tool_name": "get_adherence_history",
+    "mock_tool_args": {"days": 7},
+    "expected_action": "invoke_tool",
+    "expected_tool": "get_adherence_history",
+    "requires_confirmation": false,
+    "should_mutate_schedule": false,
+    "description": "Adherence queries must invoke get_adherence_history."
+  },
+  {
+    "id": "agent_014",
+    "intent": "malformed_arguments_recovery",
+    "user_message": "Call propose_schedule_adaptation with invalid change type and empty activity",
+    "mock_tool_name": "propose_schedule_adaptation",
+    "mock_tool_args": {"change_type": "invalid_teleport", "affected_activity": ""},
+    "expected_action": "handle_tool_validation_error",
+    "expected_tool": "propose_schedule_adaptation",
+    "should_succeed": false,
+    "description": "Invalid tool argument types must be caught safely by validation."
+  },
+  {
+    "id": "agent_015",
+    "intent": "failed_mutation_rollback",
+    "user_message": "Attempt adaptation proposal with non-string activity to verify failure handling",
+    "mock_tool_name": "propose_schedule_adaptation",
+    "mock_tool_args": {"change_type": "reschedule", "affected_activity": 99999},
+    "expected_action": "handle_tool_validation_error",
+    "expected_tool": "propose_schedule_adaptation",
+    "should_succeed": false,
+    "description": "Attempting proposal with invalid activity must fail gracefully."
+  },
+  {
+    "id": "agent_016",
+    "intent": "routine_activity_proposal_direct",
+    "user_message": "Move my Light Early Dinner to 20:00 - 20:30",
+    "mock_tool_name": "propose_schedule_adaptation",
+    "mock_tool_args": {"change_type": "reschedule", "affected_activity": "Light Early Dinner", "new_slot": "20:00 - 20:30"},
+    "expected_action": "invoke_tool",
+    "expected_tool": "propose_schedule_adaptation",
+    "requires_confirmation": false,
+    "should_mutate_schedule": false,
+    "description": "Executing propose_schedule_adaptation formulates structured proposal safely."
+  }
+]

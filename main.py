@@ -417,6 +417,8 @@ def chat_assistant(request: ChatRequest, user_id: int = Depends(get_current_user
         for idx, sym in enumerate(symptoms_list):
             symptoms_map[f"symptom_{idx}"] = sym
 
+        t_start = time.perf_counter()
+
         # 2. Perception: Generate profile
         profile = DoshaMapper.generate_profile(
             user_id=str(user_id), 
@@ -425,10 +427,14 @@ def chat_assistant(request: ChatRequest, user_id: int = Depends(get_current_user
             symptoms=symptoms_map
         )
 
-        # 3. Retrieval: Fetch relevant guidelines
-        context = UserContext(season="Balanced", weather="Pleasant", temperature_c=24.0, calendar_events=[], self_report_symptoms=[])
+        # 3. Retrieval: Fetch relevant guidelines (query-specific RAG with fallback)
+        t_rag_start = time.perf_counter()
         kb = AyurvedaKnowledgeBase()
-        guidelines = kb.retrieve(profile, context, k=3)
+        guidelines = kb.query_text(request.message, k=3)
+        if not guidelines:
+            context = UserContext(season="Balanced", weather="Pleasant", temperature_c=24.0, calendar_events=[], self_report_symptoms=[])
+            guidelines = kb.retrieve(profile, context, k=3)
+        t_rag = time.perf_counter() - t_rag_start
         guidelines_text = "\n".join([f"- {g['text']}" for g in guidelines])
 
         system_prompt = (
@@ -436,7 +442,8 @@ def chat_assistant(request: ChatRequest, user_id: int = Depends(get_current_user
             "YOUR CONTEXT:\n"
             f"- SYSTEM CLOCK: The current time is {time.strftime('%Y-%m-%d %H:%M:%S')}.\n"
             f"- AUTHENTICATED USER ID: {user_id}\n"
-            "- WELLNESS VAULT: Access to user's Assessment Data, Adherence History, and Daily Schedule history.\n\n"
+            "- WELLNESS VAULT: Access to user's Assessment Data, Adherence History, and Daily Schedule history.\n"
+            "- GUIDELINE: Keep internal reasoning concise and output direct, empathetic markdown advice.\n\n"
             f"{q_text}\n"
             f"{routine_summary}\n"
             "AUTHENTIC AYURVEDIC KNOWLEDGE BASE:\n" + guidelines_text +
@@ -456,6 +463,23 @@ def chat_assistant(request: ChatRequest, user_id: int = Depends(get_current_user
         db_history = db.get_chat_history(user_id, limit=10)
         for turn in db_history:
             messages.append({"role": turn["role"], "content": turn["content"]})
+
+        # Priority -1: Query Safety & Clinical Emergency Gate
+        t_guard_start = time.perf_counter()
+        from src.safety.guardrails import ClinicalRuleEngine
+        safety_verdict = ClinicalRuleEngine.evaluate_query_safety(request.message)
+        t_guard = time.perf_counter() - t_guard_start
+        if not safety_verdict["is_safe"]:
+            safety_msg = safety_verdict["message"]
+            db.save_chat_message(user_id, "user", request.message)
+            db.save_chat_message(user_id, "assistant", safety_msg)
+            return {
+                "response": safety_msg,
+                "proposed_schedule": None,
+                "schedule_updated": False,
+                "timestamp": time.time(),
+                "safety_alert": safety_verdict
+            }
 
         db.save_chat_message(user_id, "user", request.message)
         messages.append({"role": "user", "content": request.message})
@@ -549,12 +573,14 @@ def chat_assistant(request: ChatRequest, user_id: int = Depends(get_current_user
             return execute_planner_tool(t_name, t_args, caller_user_id=str(user_id))
 
         t_pre = state.get("schedule_timestamp", 0)
+        t_llm_start = time.perf_counter()
         chat_res = gateway.execute_tool_loop(
             messages=messages,
             tools=AVAILABLE_PLANNER_TOOLS,
             tool_executor_fn=bound_tool_executor,
             max_steps=3
         )
+        t_llm = time.perf_counter() - t_llm_start
         full_response = chat_res.content.strip()
         if not full_response:
             full_response = (
@@ -616,12 +642,26 @@ def chat_assistant(request: ChatRequest, user_id: int = Depends(get_current_user
                     proposed_schedule = val.model_dump()
 
         db.save_chat_message(user_id, "assistant", full_response)
+        t_total = time.perf_counter() - t_start
+
+        logger.info(
+            f"[/api/chat timing user={user_id}] Total={t_total:.2f}s | RAG={t_rag:.3f}s | "
+            f"Safety={t_guard:.3f}s | LLM={t_llm:.2f}s | Model={chat_res.model_used} | Fallback={chat_res.is_fallback}"
+        )
         
         return {
             "response": full_response, 
             "proposed_schedule": proposed_schedule,
             "schedule_updated": schedule_was_updated,
-            "timestamp": time.time()
+            "timestamp": time.time(),
+            "timings": {
+                "total_seconds": round(t_total, 2),
+                "rag_seconds": round(t_rag, 3),
+                "safety_seconds": round(t_guard, 3),
+                "llm_seconds": round(t_llm, 2),
+                "model_used": chat_res.model_used,
+                "is_fallback": chat_res.is_fallback
+            }
         }
 
     except Exception as e:

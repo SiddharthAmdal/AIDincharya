@@ -66,7 +66,7 @@ def clean_test_users():
     conn.commit()
     conn.close()
 
-    orig_override = app.dependency_overrides.get(get_current_user)
+    orig_override = app.dependency_overrides.pop(get_current_user, None)
     yield
     if orig_override is not None:
         app.dependency_overrides[get_current_user] = orig_override
