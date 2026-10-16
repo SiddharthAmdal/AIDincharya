@@ -19,7 +19,7 @@ An intelligent Ayurvedic wellness engine that creates personalized daily routine
 
 ```mermaid
 flowchart TD
-    UI[Web UI / Mobile Client] --> API[FastAPI Application (main.py)]
+    UI[Web UI / Mobile Client] --> API["FastAPI Application (main.py)"]
     API --> Perception[Perception Module: Dosha Mapper]
     API --> Knowledge[RAG Retriever: ChromaDB + SentenceTransformers]
     API --> Planner[Planning Agent: LangGraph Workflow]
@@ -28,6 +28,7 @@ flowchart TD
     API --> DB[(SQLite: dinacharya.db)]
     Planner --> LLM[LLM Provider: NVIDIA NIM / Gemini / Puter]
 ```
+
 
 ---
 
