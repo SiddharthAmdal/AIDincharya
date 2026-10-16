@@ -16,6 +16,13 @@ PUTER_API_KEY = os.getenv("PUTER_API_KEY", "")
 NVIDIA_BASE_URL = os.getenv("NVIDIA_BASE_URL", "https://integrate.api.nvidia.com/v1")
 NVIDIA_API_KEY = os.getenv("NVIDIA_API_KEY", "")
 
+# Gemini and OpenRouter Configuration
+GEMINI_BASE_URL = os.getenv("GEMINI_BASE_URL", "https://generativelanguage.googleapis.com/v1beta/openai/")
+GEMINI_API_KEYS = [key.strip() for key in os.getenv("GEMINI_API_KEYS", "").split(",") if key.strip()]
+OPENROUTER_BASE_URL = os.getenv("OPENROUTER_BASE_URL", "https://openrouter.ai/api/v1")
+OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY", "")
+OPENROUTER_MODEL = os.getenv("OPENROUTER_MODEL", "google/gemma-4-26b-a4b-it:free")
+
 # Provider Selection
 LLM_PROVIDER = os.getenv("LLM_PROVIDER", "nvidia").lower()
 
@@ -23,6 +30,9 @@ LLM_PROVIDER = os.getenv("LLM_PROVIDER", "nvidia").lower()
 if LLM_PROVIDER == "nvidia":
     DEFAULT_MODEL = os.getenv("DEFAULT_MODEL", "nvidia/nemotron-3.5-lightning-30b-a3b")
     FALLBACK_MODEL = os.getenv("FALLBACK_MODEL", "openai/gpt-oss-20b")
+elif LLM_PROVIDER == "gemini":
+    DEFAULT_MODEL = os.getenv("DEFAULT_MODEL", "gemini-2.5-flash")
+    FALLBACK_MODEL = os.getenv("FALLBACK_MODEL", "google/gemma-4-26b-a4b-it:free")
 else:
     DEFAULT_MODEL = os.getenv("DEFAULT_MODEL", "gpt-4o-mini")
     FALLBACK_MODEL = os.getenv("FALLBACK_MODEL", "gpt-3.5-turbo")
