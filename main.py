@@ -1,4 +1,5 @@
 import time
+import re
 import openai
 import os
 import hashlib
@@ -407,11 +408,112 @@ def chat_assistant(request: ChatRequest, user_id: int = Depends(get_current_user
             symptoms=symptoms_map
         )
 
-        # 3. Retrieval: Fetch relevant guidelines
-        context = UserContext(season="Balanced", weather="Pleasant", temperature_c=24.0, calendar_events=[], self_report_symptoms=[])
+        # 3. Retrieval: Fetch both constitutional guidelines and request-specific grounding passages
+        context = UserContext(season="Balanced", weather="Pleasant", temperature_c=24.0, calendar_events=[], self_report_symptoms=symptoms_list)
         kb = AyurvedaKnowledgeBase()
         guidelines = kb.retrieve(profile, context, k=3)
-        guidelines_text = "\n".join([f"- {g['text']}" for g in guidelines])
+        if request.message and len(request.message.strip()) > 3:
+            msg_guidelines = kb.retrieve_by_query(request.message, k=3)
+            seen_g = {g["text"][:120] for g in guidelines}
+            for mg in msg_guidelines:
+                if mg["text"][:120] not in seen_g:
+                    guidelines.append(mg)
+                    seen_g.add(mg["text"][:120])
+        guidelines_text = "\n".join([f"- [{g.get('source', 'Ayurveda Grounding')}] {g['text']}" for g in guidelines])
+
+        # Check if user message is an explicit acceptance or rejection of a prior proposal
+        db_history = db.get_chat_history(user_id, limit=10)
+        user_msg_lower = request.message.lower().strip()
+        is_acceptance = any(term in user_msg_lower for term in [
+            "accept", "apply", "confirm", "yes, please", "yes please", "please do", 
+            "make the change", "update it", "looks good", "sounds good"
+        ]) or (user_msg_lower in ["yes", "y", "sure", "ok", "okay", "agreed", "done"])
+
+        is_rejection = any(term in user_msg_lower for term in [
+            "reject", "decline", "cancel", "no, don't", "no dont", "keep my original", 
+            "keep original", "don't change", "dont change", "leave it", "keep as is",
+            "no, i would like", "no i would like"
+        ]) or (user_msg_lower in ["no", "n", "nope", "nevermind"])
+
+        last_assistant_msg = ""
+        for turn in reversed(db_history):
+            if turn.get("role") == "assistant":
+                last_assistant_msg = turn.get("content", "")
+                break
+
+        # 3b. Pre-evaluate any practice rescheduling request in the user's message against schedule & RAG principles
+        cached_sched = state.get("last_schedule")
+        all_practices = []
+        if cached_sched and isinstance(cached_sched, dict) and "schedule" in cached_sched:
+            sched_root_pre = cached_sched["schedule"]
+            if isinstance(sched_root_pre, dict):
+                all_practices = (
+                    sched_root_pre.get("morning_block", []) +
+                    sched_root_pre.get("midday_block", []) +
+                    sched_root_pre.get("evening_block", [])
+                )
+        p_names_all = [p.get("name", "") if isinstance(p, dict) else p.name for p in all_practices]
+
+        from src.planning.agent import extract_practice_time_updates, standardize_slot
+        precheck_eval = None
+        if not is_acceptance and not is_rejection and p_names_all:
+            user_requested_updates = extract_practice_time_updates(request.message, p_names_all)
+            if not user_requested_updates:
+                # Check if user mentioned a generic practice keyword (e.g. "pranayama", "bath", "massage", "exercise", "dinner")
+                # that might not yet be in p_names_all or is a substring
+                generic_candidates = ["Pranayama", "Abhyanga", "Snana (Bath)", "Vyayama (Exercise)", "Light Early Dinner", "Mitahara", "Trataka"]
+                user_requested_updates = extract_practice_time_updates(request.message, p_names_all + generic_candidates)
+            if user_requested_updates:
+                req_act, req_slot = next(iter(user_requested_updates.items()))
+                # Handle ambiguous bare times like "7:30" when user's evening schedule has dinner at 19:00-19:30
+                if re.match(r"^0[1-9]:\d{2}\s*-\s*0[1-9]:\d{2}$", req_slot) and not re.search(r"\b(am|morning)\b", request.message, re.IGNORECASE):
+                    # Check if 19:30 (evening) is adjacent to an evening activity or if the practice is already in morning at ~07:00
+                    from src.safety.guardrails import _parse_slot_minutes, _format_minutes_to_slot
+                    parsed_am = _parse_slot_minutes(req_slot)
+                    if parsed_am and 6 * 60 <= parsed_am[0] <= 10 * 60:
+                        # If user says "7:30" and they already have morning routine at 6-7am or dinner at 19:00-19:30
+                        if any(k in request.message.lower() for k in ["dinner", "evening", "night", "pm", "tonight"]) or any(
+                            (p.get("name", "") if isinstance(p, dict) else p.name) == req_act and "07:" in (p.get("time_slot", "") if isinstance(p, dict) else p.time_slot)
+                            for p in all_practices
+                        ):
+                            req_slot = _format_minutes_to_slot(parsed_am[0] + 12 * 60, parsed_am[1] + 12 * 60)
+
+                precheck_eval = ClinicalRuleEngine.evaluate_reschedule_request(
+                    activity_name=req_act,
+                    proposed_slot=req_slot,
+                    current_schedule=cached_sched,
+                    profile=profile,
+                    symptoms=symptoms_list,
+                    use_llm=False
+                )
+                for cit in precheck_eval.get("retrieved_citations", []):
+                    guidelines_text += f"\n- [{cit['source']}] {cit['excerpt']}"
+
+        precheck_prompt_block = ""
+        if precheck_eval:
+            if precheck_eval["is_valid"]:
+                precheck_prompt_block = (
+                    f"\nPRINCIPLE VALIDATION RESULT FOR USER REQUEST:\n"
+                    f"- Requested: '{precheck_eval['activity_name']}' at '{precheck_eval['proposed_slot']}'\n"
+                    f"- Status: VALID (Passes Ayurvedic & Yogic temporal/digestive principles)\n"
+                    f"- Rationale: {precheck_eval['clinical_explanation']}\n"
+                )
+            else:
+                alts = precheck_eval.get("recommended_alternatives", [])
+                best_alt = alts[0]["proposed_slot"] if alts else "18:30 - 18:45"
+                alts_fmt = "; ".join([f"{a['proposed_slot']} ({a['rationale']})" for a in alts])
+                precheck_prompt_block = (
+                    f"\nCRITICAL PRINCIPLE VALIDATION RESULT FOR USER REQUEST:\n"
+                    f"- Requested: '{precheck_eval['activity_name']}' at '{precheck_eval['proposed_slot']}'\n"
+                    f"- Status: REJECTED / CONTRAINDICATED BY AYURVEDIC & YOGIC PRINCIPLES\n"
+                    f"- Violated Principles: {'; '.join(precheck_eval['violated_principles'])}\n"
+                    f"- Validated Alternative Slots: {alts_fmt}\n"
+                    f"- MANDATORY ACTION: You MUST NOT approve {precheck_eval['proposed_slot']}. Warmly explain why it violates "
+                    f"digestive/circadian principles (citing the grounding literature), and propose the safe alternative "
+                    f"**{best_alt}** instead. Ask: 'I recommend scheduling {precheck_eval['activity_name']} at **{best_alt}** instead. "
+                    f"Would you like me to confirm and update your daily routine to **{best_alt}**? (Reply **Yes** to accept this recommended time, "
+                    f"or **No** to keep your current schedule unchanged.)' Append [RECALIBRATE] at the end.\n"
+                )
 
         system_prompt = (
             "You are a warm, wise traditional Ayurvedic physician (Vaidya).\n\n"
@@ -421,50 +523,33 @@ def chat_assistant(request: ChatRequest, user_id: int = Depends(get_current_user
             "- WELLNESS VAULT: Access to user's Assessment Data, Adherence History, and Daily Schedule history.\n\n"
             f"{q_text}\n"
             f"{routine_summary}\n"
-            "AUTHENTIC AYURVEDIC KNOWLEDGE BASE:\n" + guidelines_text +
+            "AUTHENTIC AYURVEDIC & YOGIC KNOWLEDGE BASE:\n" + guidelines_text +
+            precheck_prompt_block +
             "\n\nINSTRUCTIONS & PROTOCOLS:\n"
             "1. Use Markdown (**bold**, - lists) for clear clinical formatting.\n"
-            "2. Reference specific assessment answers and current tasks.\n"
-            "3. ADAPTATION & CONFIRMATION PROTOCOL:\n"
-            "   - When a user asks to change, reschedule, move, or adjust an activity time, formulate a clear proposal.\n"
-            "   - State clearly: 'I propose moving [Activity Name] from [Old Time] to [New Time]. Would you like me to confirm and update your daily routine?'\n"
-            "   - Do NOT claim that the schedule has already been updated, synchronized, or rescheduled. It is ONLY updated after the user explicitly confirms (e.g. 'yes', 'confirm', 'apply').\n"
+            "2. Reference specific assessment answers, current scheduled tasks, and grounding principles.\n"
+            "3. REASONED VALIDATION & ADAPTATION PROTOCOL:\n"
+            "   - When a user asks to change, reschedule, move, or adjust an activity time, NEVER blindly agree.\n"
+            "   - First inspect the USER'S CURRENT SCHEDULE (especially meal timings like Mitahara and Light Early Dinner, bath, exercise, and sleep) and call `propose_schedule_adaptation` to validate the requested slot against Ayurvedic & Yogic principles (such as the Bhuktavastu / empty-stomach rule requiring 2+ hours after a light meal or 3-4 hours after a main meal before Pranayama, Asana, Vyayama, Abhyanga, or Snana).\n"
+            "   - IF THE REQUESTED TIME PASSES VALIDATION: State clearly: 'I propose moving [Activity Name] from [Old Time] to [New Time]. Would you like me to confirm and update your daily routine? (Reply **Yes** to confirm, or **No** to keep your current schedule.)' and append [RECALIBRATE].\n"
+            "   - IF THE REQUESTED TIME VIOLATES PRINCIPLES: Do NOT approve the requested time. Explain the physiological reason warmly (e.g., practicing Pranayama or bathing right after a meal disrupts Samana Vayu and Jatharagni during the Kapha stage of digestion), recommend the best conflict-free alternative slot from the validator (e.g., 15-30 mins before dinner or 90-120 mins after dinner), and ask: 'I recommend scheduling [Activity Name] at **[Safe Alternative Time]** instead. Would you like me to confirm and update your daily routine to **[Safe Alternative Time]**? (Reply **Yes** to accept this recommended time, or **No** to keep your current schedule unchanged.)' and append [RECALIBRATE].\n"
+            "   - Do NOT claim that the schedule has already been updated, synchronized, or rescheduled. It is ONLY updated after the user explicitly confirms.\n"
             "   - NEVER reschedule or modify unrelated activities (such as Trataka / Reflection) unless the user specifically asked for them.\n"
-            "   - Append the tag [RECALIBRATE] at the very end of your proposal.\n"
             "4. Keep response under 3 concise, empathetic paragraphs."
         )
 
         messages = [{"role": "system", "content": system_prompt}]
-        db_history = db.get_chat_history(user_id, limit=10)
         for turn in db_history:
             messages.append({"role": turn["role"], "content": turn["content"]})
 
         db.save_chat_message(user_id, "user", request.message)
         messages.append({"role": "user", "content": request.message})
 
-        # Check if user message is an explicit acceptance or rejection of a prior proposal
-        user_msg_lower = request.message.lower().strip()
-        is_acceptance = any(term in user_msg_lower for term in [
-            "accept", "apply", "confirm", "yes, please", "yes please", "please do", 
-            "make the change", "update it", "looks good", "sounds good"
-        ]) or (user_msg_lower in ["yes", "y", "sure", "ok", "okay", "agreed", "done"])
-
-        is_rejection = any(term in user_msg_lower for term in [
-            "reject", "decline", "cancel", "no, don't", "no dont", "keep my original", 
-            "keep original", "don't change", "dont change", "leave it", "keep as is"
-        ]) or (user_msg_lower in ["no", "n", "nope", "nevermind"])
-
-        last_assistant_msg = ""
-        for turn in reversed(db_history):
-            if turn.get("role") == "assistant":
-                last_assistant_msg = turn.get("content", "")
-                break
-
         # Rejection handling: leave schedule untouched
         if is_rejection and last_assistant_msg:
             reject_text = (
                 "Understood. I have discarded the proposed adjustment. Your daily routine remains completely unchanged "
-                "and preserved in your persistent vault. Let me know if you would like any other assistance! 🙏"
+                "and preserved in your persistent vault. If you would like to explore a different time slot or adjust another part of your schedule (such as meal timings), please let me know! 🙏"
             )
             db.save_chat_message(user_id, "assistant", reject_text)
             return {
@@ -474,25 +559,16 @@ def chat_assistant(request: ChatRequest, user_id: int = Depends(get_current_user
                 "timestamp": time.time()
             }
 
-        cached_sched = state.get("last_schedule")
         today_date = datetime.now().strftime('%Y-%m-%d')
         
         # If user is accepting an existing proposal
         if is_acceptance and cached_sched and isinstance(cached_sched, dict) and "schedule" in cached_sched:
-            sched_root = cached_sched["schedule"]
-            all_practices = (
-                sched_root.get("morning_block", []) +
-                sched_root.get("midday_block", []) +
-                sched_root.get("evening_block", [])
-            )
-            p_names = [p.get("name", "") if isinstance(p, dict) else p.name for p in all_practices]
-            from src.planning.agent import extract_practice_time_updates
             from src.planning.schedule_service import mutate_user_schedule
             
             updates = {}
             for turn in reversed(db_history):
                 if turn.get("role") == "assistant":
-                    extracted = extract_practice_time_updates(turn.get("content", ""), p_names)
+                    extracted = extract_practice_time_updates(turn.get("content", ""), p_names_all)
                     if extracted:
                         updates = extracted
                         last_assistant_msg = turn.get("content", "")
@@ -501,9 +577,10 @@ def chat_assistant(request: ChatRequest, user_id: int = Depends(get_current_user
             if updates:
                 mut_res = mutate_user_schedule(user_id, updates, date_str=today_date)
                 if mut_res.get("success"):
+                    applied_map = mut_res.get("applied_updates") or updates
                     confirm_text = (
                         "✓ **Schedule Synchronized**: I have updated your daily routine in your persistent vault. "
-                        + ", ".join([f"**{k}** is now set to **{v}**" for k, v in updates.items()])
+                        + ", ".join([f"**{k}** is now set to **{v}**" for k, v in applied_map.items()])
                         + ". All other practices and fixed commitments remain preserved. You can view your updated routine now. 🙏"
                     )
                     db.save_chat_message(user_id, "assistant", confirm_text)
@@ -538,12 +615,40 @@ def chat_assistant(request: ChatRequest, user_id: int = Depends(get_current_user
             max_steps=3
         )
         full_response = chat_res.content.strip()
-        if not full_response:
-            full_response = (
-                "Namaste! Based on your constitutional assessment and classical Ayurvedic guidelines, "
-                "maintaining consistent wake times near Brahma Muhurta, nourishing meals during midday Agni, "
-                "and restorative evening practices are foundational. How can I help adapt your Dinacharya today? 🙏"
-            )
+
+        # Deterministic guardrail enforcement if LLM returned empty or failed to reject a contraindicated request
+        if precheck_eval and not precheck_eval["is_valid"]:
+            alts = precheck_eval.get("recommended_alternatives", [])
+            best_alt = alts[0]["proposed_slot"] if alts else "18:30 - 18:45"
+            best_alt_why = alts[0]["rationale"] if alts else "Practiced on an empty stomach before dinner."
+            secondary_alt = f" Alternatively, **{alts[1]['proposed_slot']}** ({alts[1]['rationale']}) is also suitable." if len(alts) > 1 else ""
+            if not full_response or (best_alt not in full_response and "contraindicated" not in full_response.lower() and "empty stomach" not in full_response.lower()):
+                full_response = (
+                    f"Namaste. Looking at your current schedule, I cannot recommend scheduling **{precheck_eval['activity_name']}** "
+                    f"at **{precheck_eval['proposed_slot']}**.\n\n"
+                    f"**Clinical & Yogic Principle**: {precheck_eval['clinical_explanation']}\n\n"
+                    f"**Recommended Alternative**: I recommend scheduling **{precheck_eval['activity_name']}** at **{best_alt}** instead "
+                    f"({best_alt_why}).{secondary_alt}\n\n"
+                    f"Would you like me to confirm and update your daily routine to **{best_alt}**? "
+                    f"(Reply **Yes** to accept this recommended time, or **No** to keep your current schedule unchanged.) [RECALIBRATE]"
+                )
+            elif "[RECALIBRATE]" not in full_response:
+                full_response += " [RECALIBRATE]"
+        elif not full_response:
+            if precheck_eval and precheck_eval["is_valid"]:
+                full_response = (
+                    f"Namaste! Moving **{precheck_eval['activity_name']}** to **{precheck_eval['proposed_slot']}** "
+                    f"aligns well with your constitution and maintains proper spacing from your meals.\n\n"
+                    f"I propose moving **{precheck_eval['activity_name']}** to **{precheck_eval['proposed_slot']}**. "
+                    f"Would you like me to confirm and update your daily routine? "
+                    f"(Reply **Yes** to confirm, or **No** to keep your current schedule.) [RECALIBRATE]"
+                )
+            else:
+                full_response = (
+                    "Namaste! Based on your constitutional assessment and classical Ayurvedic guidelines, "
+                    "maintaining consistent wake times near Brahma Muhurta, nourishing meals during midday Agni, "
+                    "and restorative evening practices are foundational. How can I help adapt your Dinacharya today? 🙏"
+                )
         
         # Check if any tool in the loop successfully mutated the canonical schedule
         fresh_state = db.get_user_state(user_id)
@@ -557,26 +662,34 @@ def chat_assistant(request: ChatRequest, user_id: int = Depends(get_current_user
             clean_proposal = full_response.replace("[RECALIBRATE]", "").strip()
             full_response = clean_proposal
             
-            # Fast deterministic proposal extraction (NO redundant heavy LLM/RAG call)
+            # Fast principle-validated proposal extraction
             if cached_sched and isinstance(cached_sched, dict) and "schedule" in cached_sched:
                 sched_root = cached_sched["schedule"]
-                all_p = (
-                    sched_root.get("morning_block", []) +
-                    sched_root.get("midday_block", []) +
-                    sched_root.get("evening_block", [])
-                )
-                p_names = [p.get("name", "") if isinstance(p, dict) else p.name for p in all_p]
-                from src.planning.agent import extract_practice_time_updates, standardize_slot
-                updates = extract_practice_time_updates(full_response, p_names)
-                if updates:
+                updates = extract_practice_time_updates(full_response, p_names_all)
+                # Ensure any extracted update passes principle validation (if invalid, use top recommended alternative)
+                validated_updates = {}
+                for u_act, u_slot in updates.items():
+                    ev = ClinicalRuleEngine.evaluate_reschedule_request(
+                        activity_name=u_act,
+                        proposed_slot=u_slot,
+                        current_schedule=cached_sched,
+                        profile=profile,
+                        symptoms=symptoms_list,
+                        use_llm=False
+                    )
+                    if ev["is_valid"]:
+                        validated_updates[u_act] = ev["proposed_slot"]
+                    elif ev.get("recommended_alternatives"):
+                        validated_updates[u_act] = ev["recommended_alternatives"][0]["proposed_slot"]
+
+                if validated_updates:
                     from src.models import DinacharyaSchedule, Practice
-                    from src.safety.guardrails import ClinicalRuleEngine
                     def clone_b(raw_items):
                         out = []
                         for it in raw_items:
                             d = it if isinstance(it, dict) else it.model_dump()
                             nm = d.get("name", "")
-                            sl = updates.get(nm, d.get("time_slot", "Flexible"))
+                            sl = validated_updates.get(nm, d.get("time_slot", "Flexible"))
                             out.append(Practice(
                                 name=nm,
                                 time_slot=standardize_slot(sl),

@@ -89,13 +89,29 @@ def query_ayurvedic_knowledge(
     dosha: Optional[str] = None,
     symptom: Optional[str] = None,
     season: Optional[str] = None,
+    activity: Optional[str] = None,
+    query_text: Optional[str] = None,
     k: int = 4
 ) -> List[Dict[str, Any]]:
     """
     Primary tool to query the Ayurvedic RAG Knowledge Base.
     Bridges the perception and retrieval layers into the agent planning context.
+    Supports both profile-based routine retrieval and targeted activity/timing principle retrieval.
     """
     kb = AyurvedaKnowledgeBase()
+
+    if query_text:
+        return kb.retrieve_by_query(query_text, k=k)
+
+    if activity:
+        adj_ctx = f"for {dosha or ''} {symptom or ''} during {season or ''}".strip()
+        return kb.retrieve_for_reschedule(
+            activity_name=activity,
+            proposed_slot="requested time",
+            adjacent_context=adj_ctx,
+            profile=profile,
+            k=k
+        )
 
     if profile is None:
         p_vata = 0.6 if dosha and "vata" in dosha.lower() else 0.33
@@ -433,32 +449,103 @@ def propose_schedule_adaptation(
     change_type: str,
     affected_activity: str,
     new_slot: Optional[str] = None,
-    rationale: str = ""
+    rationale: str = "",
+    current_schedule: Optional[Dict[str, Any]] = None,
+    use_llm: bool = False
 ) -> Dict[str, Any]:
     """
-    Validates a proposed schedule adaptation against safety rules before committing.
-    Enforces that proposals require explicit user confirmation before mutating vault state.
+    Validates a proposed schedule adaptation against classical Ayurvedic & Yogic principles
+    (e.g., Bhuktavastu post-meal spacing, Kriya Krama ordering, Circadian Dosha Kala, and overlaps)
+    and RAG grounding literature before committing.
+    Enforces that proposals require explicit user confirmation before mutating vault state,
+    and recommends reasoned alternative time slots if the requested slot violates principles.
     """
     valid_change_types = {"reschedule", "skip", "shorten", "substitute"}
     if change_type not in valid_change_types:
         return {"valid": False, "error": f"Invalid change_type '{change_type}'. Must be one of {valid_change_types}"}
 
     from src.planning.agent import standardize_slot
-    std_slot = standardize_slot(new_slot) if new_slot else None
+    from src.safety.guardrails import ClinicalRuleEngine
 
+    std_slot = standardize_slot(new_slot) if new_slot else None
+    sched_to_check = current_schedule
+    profile = None
+    active_symptoms: List[str] = []
+
+    if sched_to_check is None:
+        try:
+            uid_int = int(user_id)
+            state = db.get_user_state(uid_int)
+            if state:
+                sched_to_check = state.get("last_schedule") or {}
+                q_resp = state.get("questionnaire_responses", {})
+                telemetry = dict(state.get("telemetry_baselines", {}))
+                vikriti = state.get("current_vikriti", {})
+                if isinstance(vikriti, dict):
+                    active_symptoms.extend(vikriti.get("symptoms", []))
+                    telemetry.update(vikriti.get("telemetry", {}))
+                from src.perception.dosha_mapper import DoshaMapper
+                symptoms_map = {f"sym_{i}": s for i, s in enumerate(active_symptoms)} if active_symptoms else None
+                profile = DoshaMapper.generate_profile(str(user_id), q_resp, telemetry, symptoms=symptoms_map)
+        except Exception as exc:
+            logger.warning(f"Could not load user schedule/profile for proposal validation: {exc}")
+
+    eval_res = ClinicalRuleEngine.evaluate_reschedule_request(
+        activity_name=affected_activity,
+        proposed_slot=std_slot or "",
+        current_schedule=sched_to_check,
+        profile=profile,
+        symptoms=active_symptoms,
+        change_type=change_type,
+        use_llm=use_llm
+    )
+
+    if not eval_res["is_valid"]:
+        alts = eval_res.get("recommended_alternatives", [])
+        best_alt = alts[0]["proposed_slot"] if alts else None
+        best_alt_why = alts[0]["rationale"] if alts else "Aligns with empty-stomach and circadian Dinacharya guidelines."
+        return {
+            "valid": False,
+            "proposal_status": "rejected_by_principles",
+            "user_id": user_id,
+            "change_type": change_type,
+            "affected_activity": affected_activity,
+            "requested_slot": eval_res.get("proposed_slot") or std_slot,
+            "proposed_slot": best_alt,
+            "violated_principles": eval_res.get("violated_principles", []),
+            "clinical_explanation": eval_res.get("clinical_explanation", ""),
+            "retrieved_citations": eval_res.get("retrieved_citations", []),
+            "recommended_alternatives": alts,
+            "safety_checked": True,
+            "instruction": (
+                f"PRINCIPLE VALIDATION FAILED for '{affected_activity}' at {eval_res.get('proposed_slot') or std_slot}. "
+                f"Do NOT approve {eval_res.get('proposed_slot') or std_slot}. "
+                f"1. Explain to the user why {eval_res.get('proposed_slot') or std_slot} is contraindicated: {eval_res.get('clinical_explanation')} "
+                f"2. Recommend the validated alternative slot **{best_alt}** ({best_alt_why}). "
+                f"3. Ask clearly: 'I recommend scheduling {affected_activity} at **{best_alt}** instead. "
+                f"Would you like me to confirm and update your daily routine to **{best_alt}**? "
+                f"(Reply **Yes** to accept this recommended time, **No** to keep your current schedule unchanged, or share another time preference.)' "
+                f"Append [RECALIBRATE] at the end of your message so the safe alternative ({best_alt}) is staged."
+            )
+        }
+
+    final_slot = eval_res.get("proposed_slot") or std_slot
     return {
         "valid": True,
         "proposal_status": "pending_user_confirmation",
         "user_id": user_id,
         "change_type": change_type,
         "affected_activity": affected_activity,
-        "proposed_slot": std_slot,
-        "rationale": rationale,
+        "proposed_slot": final_slot,
+        "rationale": rationale or eval_res.get("clinical_explanation", ""),
+        "clinical_explanation": eval_res.get("clinical_explanation", ""),
+        "retrieved_citations": eval_res.get("retrieved_citations", []),
         "safety_checked": True,
         "instruction": (
-            f"Present this proposed schedule adjustment to the user for explicit confirmation. "
+            f"Present this validated schedule adjustment to the user for explicit confirmation. "
             f"Do NOT claim the change is already persisted or updated. "
-            f"Ask the user: 'I propose moving {affected_activity} to {std_slot}. Would you like me to confirm and update your daily routine?'"
+            f"Ask the user: 'I propose moving {affected_activity} to {final_slot}. "
+            f"Would you like me to confirm and update your daily routine? (Reply **Yes** to confirm, or **No** to keep your current schedule.)'"
         )
     }
 
@@ -484,13 +571,15 @@ AVAILABLE_PLANNER_TOOLS: List[Dict[str, Any]] = [
         "type": "function",
         "function": {
             "name": "query_ayurvedic_knowledge",
-            "description": "Retrieves classical Ayurvedic guidelines and recommendations from the RAG knowledge base for specific doshas, symptoms, or seasons.",
+            "description": "Retrieves classical Ayurvedic & Ministry of AYUSH guidelines from the RAG knowledge base for specific practices, timing rules, doshas, symptoms, or seasons.",
             "parameters": {
                 "type": "object",
                 "properties": {
                     "dosha": {"type": "string", "description": "Dominant or aggravated dosha: 'Vata', 'Pitta', or 'Kapha'."},
                     "symptom": {"type": "string", "description": "Self-reported symptom such as 'fatigue', 'insomnia', 'fever', 'stress'."},
-                    "season": {"type": "string", "description": "Current season: 'Vasanta' (Spring), 'Grishma' (Summer), 'Varsha' (Monsoon), 'Sharad' (Autumn), 'Hemanta' (Winter)."}
+                    "season": {"type": "string", "description": "Current season: 'Vasanta' (Spring), 'Grishma' (Summer), 'Varsha' (Monsoon), 'Sharad' (Autumn), 'Hemanta' (Winter)."},
+                    "activity": {"type": "string", "description": "Specific Dinacharya/Yogic practice to check timing and contraindication rules for (e.g. 'Pranayama', 'Snana', 'Abhyanga', 'Vyayama')."},
+                    "query_text": {"type": "string", "description": "Custom semantic search query for the grounding knowledge base."}
                 }
             }
         }
@@ -532,14 +621,14 @@ AVAILABLE_PLANNER_TOOLS: List[Dict[str, Any]] = [
         "type": "function",
         "function": {
             "name": "propose_schedule_adaptation",
-            "description": "Generates a structured schedule adaptation proposal (e.g. rescheduling an activity) for user confirmation.",
+            "description": "Validates a proposed schedule change against the user's current schedule, meal/digestion gaps (Bhuktavastu), and RAG grounding principles. If valid, stages the proposal for confirmation; if invalid, returns the violated principles and safe alternative time slots.",
             "parameters": {
                 "type": "object",
                 "properties": {
                     "user_id": {"type": "string", "description": "User ID."},
                     "change_type": {"type": "string", "enum": ["reschedule", "skip", "shorten", "substitute"], "description": "Type of schedule change."},
                     "affected_activity": {"type": "string", "description": "Name of the activity being adapted."},
-                    "new_slot": {"type": "string", "description": "New proposed time slot (e.g. '21:00 - 21:30')."},
+                    "new_slot": {"type": "string", "description": "New requested time slot (e.g. '19:30 - 19:45' or '21:00 - 21:30')."},
                     "rationale": {"type": "string", "description": "Ayurvedic and logistical justification."}
                 },
                 "required": ["user_id", "change_type", "affected_activity"]
@@ -638,6 +727,8 @@ def execute_planner_tool(tool_name: str, args: Dict[str, Any], caller_user_id: O
                 dosha=args.get("dosha"),
                 symptom=args.get("symptom"),
                 season=args.get("season"),
+                activity=args.get("activity"),
+                query_text=args.get("query_text"),
                 k=3
             )
             return json.dumps({"retrieved_guidelines": guidelines})
