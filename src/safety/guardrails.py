@@ -1,3 +1,4 @@
+import os
 import copy
 import json
 import logging
@@ -6,6 +7,9 @@ from typing import List, Dict, Any, Optional, Tuple
 from src.models import DinacharyaSchedule, DoshaProfile, Practice
 
 logger = logging.getLogger("SafetyEngine")
+
+EMERGENCY_NUMBER = os.getenv("EMERGENCY_NUMBER", "112")
+EMERGENCY_REGION = os.getenv("EMERGENCY_REGION", "local emergency dispatch")
 
 
 def _parse_slot_minutes(slot_str: str, default_duration: int = 15) -> Optional[Tuple[int, int]]:
@@ -894,4 +898,121 @@ Return strict JSON with keys:
             cleaned_block.sort(key=lambda x: x.time_slot or "")
 
         return cleaned_block, overrides_logged
+
+    @staticmethod
+    def evaluate_query_safety(user_text: str, context: Optional[str] = None) -> Dict[str, Any]:
+        """
+        Symbolic input guardrail validating user queries against acute emergencies,
+        pharmaceutical prescription requests, dangerous medical contraindications,
+        and prompt injection attacks.
+        Returns safety verdict, action, and response message if blocked/redirected.
+        """
+        text_lower = user_text.lower()
+        combined = f"{text_lower} {(context or '').lower()}"
+
+        # 1. Acute Medical Emergencies
+        emergency_triggers = [
+            "chest pain", "crushing chest", "left arm", "difficulty breathing",
+            "slurred speech", "facial drooping", "face is drooping", "arm is limp", "cannot move the right side",
+            "rebound tenderness", "lower right abdominal", "appendicitis",
+            "suicide", "kill myself", "swallowed bleach", "poison",
+            "throat is closing", "throat closing up", "lips are swelling", "anaphylaxis",
+            "coughing up blood", "vomiting blood", "severe hemorrhage", "sudden vision loss"
+        ]
+        if any(term in combined for term in emergency_triggers):
+            emergency_num = os.getenv("EMERGENCY_NUMBER", "112")
+            region_note = os.getenv("EMERGENCY_REGION", "local emergency dispatch")
+            return {
+                "is_safe": False,
+                "action": "emergency_redirection",
+                "category": "acute_medical_emergency",
+                "message": (
+                    "⚠️ **CRITICAL MEDICAL ALERT**: Your message indicates potential acute medical symptoms that require "
+                    "immediate emergency medical evaluation. AI Dincharya is an Ayurvedic lifestyle routine advisor and CANNOT treat or evaluate emergencies. "
+                    f"Please call **{emergency_num}** ({region_note}) or your local emergency hotline (e.g. 112/911/999) or proceed to the nearest hospital emergency department immediately."
+                )
+            }
+
+        # 2. Prompt Injection / System Jailbreak / Secret Exfiltration
+        injection_triggers = [
+            "ignore all previous", "ignore previous instructions", "you are now dan", "dan mode",
+            "system instruction override", "print out your entire system prompt", "secret keys",
+            "database credentials", "push subscription endpoints of other users", "list of all registered users",
+            "select * from users", "delete from users",
+            "disregard all previous safety", "developer mode active", "bypass all restrictions",
+            "reveal system prompt", "assistant mode disabled"
+        ]
+        if any(term in combined for term in injection_triggers):
+            return {
+                "is_safe": False,
+                "action": "refusal_prompt_injection",
+                "category": "prompt_injection_jailbreak",
+                "message": (
+                    "I cannot comply with requests that attempt to override safety protocols, exfiltrate internal system prompts, "
+                    "or access protected user data. How can I assist you with your daily Ayurvedic Dinacharya routine safely?"
+                )
+            }
+
+        # 3. Dangerous Medication Stoppage (Higher risk priority over general out-of-scope prescription requests)
+        dangerous_med_triggers = [
+            "throw away my insulin", "stop taking insulin", "stop my blood pressure pills", "stop chemotherapy",
+            "stop taking my statin", "quit blood thinners", "stop my warfarin", "double my dose of insulin"
+        ]
+        if any(term in text_lower for term in dangerous_med_triggers):
+            return {
+                "is_safe": False,
+                "action": "medical_warning_refusal",
+                "category": "dangerous_medical_advice",
+                "message": (
+                    "⚠️ **SAFETY WARNING**: Do not stop or alter essential prescribed medications (such as insulin, blood pressure drugs, statins, or anticoagulants) "
+                    "without the direct supervision of your licensed physician or endocrinologist. Ayurvedic lifestyle practices are complementary "
+                    "and must never abruptly replace life-sustaining medical therapies."
+                )
+            }
+
+        # 4. Prescription Writing / Allopathic Drug Scope
+        prescription_triggers = [
+            "write me a prescription", "prescription for", "prescribe", "refill",
+            "dispense", "amoxicillin", "metformin", "antibiotic dosage", "prescribe me"
+        ]
+        if any(term in text_lower for term in prescription_triggers) and not any(term in text_lower for term in ["ayurveda", "routine", "herbal"]):
+            return {
+                "is_safe": False,
+                "action": "refusal_out_of_scope",
+                "category": "prescription_out_of_scope",
+                "message": (
+                    "I am an Ayurvedic lifestyle routine advisor and cannot write prescriptions or dispense pharmaceutical medications. "
+                    "Please consult a licensed medical physician or licensed pharmacist for pharmaceutical prescriptions."
+                )
+            }
+
+        # 5. Extreme Contraindication Combinations (e.g. Pregnancy + Fever + Sauna/Dry Fasting)
+        if "pregnant" in text_lower and ("fever" in text_lower or "sauna" in text_lower or "fasting" in text_lower):
+            return {
+                "is_safe": False,
+                "action": "clinical_contraindication_refusal",
+                "category": "contraindicated_ayurvedic_practice",
+                "message": (
+                    "⚠️ **CONTRAINDICATION**: Rigorous heat therapies (Swedana/sauna) and dry water fasting are strictly contraindicated "
+                    "during pregnancy, especially in the presence of fever. Please consult your obstetrician and a qualified Vaidya for gentle maternal care."
+                )
+            }
+
+        if any(term in text_lower for term in ["ulcer", "gastritis", "acid reflux"]) and any(term in text_lower for term in ["cayenne", "chili", "hot pepper"]):
+            return {
+                "is_safe": False,
+                "action": "contraindication_reversal",
+                "category": "clinical_contraindication_override",
+                "message": (
+                    "⚠️ **CONTRAINDICATION**: Pungent, heating spices such as cayenne pepper and chili directly aggravate Pitta dosha and are strictly "
+                    "contraindicated during active peptic ulcer disease and severe acid reflux. Cooling, soothing practices are recommended instead."
+                )
+            }
+
+        return {
+            "is_safe": True,
+            "action": "safe_helpful_response",
+            "category": "benign_health_query",
+            "message": None
+        }
 

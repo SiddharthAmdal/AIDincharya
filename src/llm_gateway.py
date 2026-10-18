@@ -4,6 +4,7 @@ Centralizes provider client management, model failovers, structured output parsi
 native tool-calling loops, and bounded retries.
 """
 
+import os
 import json
 import logging
 import re
@@ -41,17 +42,20 @@ class LLMGateway:
     _instance: Optional["LLMGateway"] = None
 
     def __init__(self):
+        llm_timeout = float(os.getenv("LLM_TIMEOUT", "22.0"))
         if LLM_PROVIDER == "nvidia":
             self.client = OpenAI(
                 base_url=NVIDIA_BASE_URL,
                 api_key=NVIDIA_API_KEY,
-                timeout=90.0
+                timeout=llm_timeout,
+                max_retries=0  # Prevents invisible 3x retry multiplication inside OpenAI SDK
             )
         else:
             self.client = OpenAI(
                 base_url=PUTER_BASE_URL,
                 api_key=PUTER_API_KEY,
-                timeout=90.0
+                timeout=llm_timeout,
+                max_retries=0
             )
         self.primary_model = DEFAULT_MODEL
         self.fallback_model = FALLBACK_MODEL
@@ -89,7 +93,7 @@ class LLMGateway:
         last_error = None
 
         for idx, target_model in enumerate(models_to_try):
-            is_fallback = (idx > 0)
+            is_fallback = (idx > 0) or (target_model == self.fallback_model)
             for attempt in range(1, retries_per_model + 1):
                 start_time = time.perf_counter()
                 try:
@@ -111,6 +115,8 @@ class LLMGateway:
                         else:
                             kwargs["tool_choice"] = "auto"
 
+                    call_timeout = float(os.getenv("FALLBACK_LLM_TIMEOUT", "30.0")) if is_fallback else float(os.getenv("PRIMARY_LLM_TIMEOUT", "14.0"))
+                    kwargs["timeout"] = call_timeout
                     resp = self.client.chat.completions.create(**kwargs)
                     elapsed = time.perf_counter() - start_time
                     choice = resp.choices[0]
@@ -121,6 +127,9 @@ class LLMGateway:
 
                     content = msg.content or ""
                     reasoning = getattr(msg, "reasoning_content", None)
+                    # If model returned pure reasoning and no tool call, use reasoning text as response content
+                    if not content and reasoning and not msg.tool_calls:
+                        content = reasoning.strip()
 
                     return LLMResponse(
                         content=content,
@@ -139,10 +148,15 @@ class LLMGateway:
                     logger.warning(
                         f"LLM request failed on model '{target_model}' (attempt {attempt}/{retries_per_model}) in {elapsed:.2f}s: {exc}"
                     )
+                    # If primary model timed out and a fallback model exists, fail over immediately
+                    if (isinstance(exc, APITimeoutError) or "timeout" in str(exc).lower()) and (idx + 1 < len(models_to_try)):
+                        logger.info(f"Model '{target_model}' timed out in {elapsed:.2f}s. Immediately failing over to '{models_to_try[idx+1]}'.")
+                        break
+
                     if not self._is_retryable(exc) and "404" not in str(exc) and "410" not in str(exc):
                         break
                     if attempt < retries_per_model:
-                        time.sleep(1.0 * attempt)
+                        time.sleep(0.5 * attempt)
 
         raise RuntimeError(f"All LLM models and retries exhausted. Last error: {last_error}")
 
@@ -218,14 +232,20 @@ class LLMGateway:
         Executes a multi-step native tool calling loop until the model returns a final text response.
         """
         history = list(messages)
+        active_model = self.primary_model
 
         for step in range(max_steps):
             res = self.create_chat_completion(
                 messages=history,
+                model=active_model,
                 tools=tools,
-                max_tokens=2048,
-                temperature=0.1
+                max_tokens=4096,
+                temperature=0.1,
+                retries_per_model=1
             )
+            # If fallback model answered successfully, pin it for the remainder of this multi-step loop
+            if res.is_fallback and res.model_used:
+                active_model = res.model_used
 
             # If no tool calls were requested, return final response
             if not res.tool_calls:

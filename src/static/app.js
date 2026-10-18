@@ -76,12 +76,28 @@ async function initNotifications() {
             <div id="notifications-list" class="max-h-80 overflow-y-auto divide-y divide-gray-50 p-2">
                 <div class="p-6 text-center text-gray-400 text-sm">Loading notifications...</div>
             </div>
+            <div class="px-4 py-3 bg-gray-50 border-t border-gray-100 flex items-center justify-between text-xs">
+                <div class="flex items-center gap-1.5">
+                    <span class="material-symbols-outlined text-sm text-primary">circle_notifications</span>
+                    <span class="text-gray-700 font-semibold">Browser Push</span>
+                    <span id="notif-dropdown-push-badge" class="text-[10px] px-2 py-0.5 rounded font-bold bg-gray-200 text-gray-600">Off</span>
+                </div>
+                <button id="notif-dropdown-push-toggle" class="text-primary hover:underline font-bold text-[11px]">Enable</button>
+            </div>
         `;
         document.body.appendChild(dropdown);
 
         document.getElementById('close-notif-dropdown').onclick = () => {
             dropdown.classList.add('hidden');
         };
+
+        const dropBtn = document.getElementById('notif-dropdown-push-toggle');
+        if (dropBtn) {
+            dropBtn.onclick = (e) => {
+                e.stopPropagation();
+                toggleWebPush();
+            };
+        }
 
         // Close on outside click
         document.addEventListener('click', (e) => {
@@ -156,6 +172,7 @@ async function initNotifications() {
         dropdown.classList.toggle('hidden');
         if (!dropdown.classList.contains('hidden')) {
             loadNotifications();
+            renderWebPushControls();
         }
     };
 
@@ -163,16 +180,290 @@ async function initNotifications() {
     loadNotifications();
 }
 
-async function authenticatedFetch(url, options = {}) {
+// --- Web Push Notifications Subsystem ---
+function urlBase64ToUint8Array(base64String) {
+    const padding = '='.repeat((4 - (base64String.length % 4)) % 4);
+    const base64 = (base64String + padding)
+        .replace(/-/g, '+')
+        .replace(/_/g, '/');
+    const rawData = window.atob(base64);
+    const outputArray = new Uint8Array(rawData.length);
+    for (let i = 0; i < rawData.length; ++i) {
+        outputArray[i] = rawData.charCodeAt(i);
+    }
+    return outputArray;
+}
+
+let webPushState = {
+    supported: false,
+    permission: 'default',
+    subscribed: false,
+    loading: false,
+    swRegistration: null
+};
+
+function renderWebPushControls() {
+    const dashBadge = document.getElementById('dashboard-push-badge');
+    const dashBtn = document.getElementById('dashboard-push-toggle-btn');
+    const dropBadge = document.getElementById('notif-dropdown-push-badge');
+    const dropBtn = document.getElementById('notif-dropdown-push-toggle');
+
+    if (!webPushState.supported) {
+        if (dashBadge) {
+            dashBadge.className = 'px-2.5 py-0.5 rounded-full text-[11px] font-bold bg-gray-100 text-gray-500';
+            dashBadge.innerText = 'Not Supported';
+        }
+        if (dashBtn) {
+            dashBtn.disabled = true;
+            dashBtn.className = 'w-full py-2.5 px-4 rounded-xl font-label-md text-xs font-bold bg-gray-100 text-gray-400 cursor-not-allowed';
+            dashBtn.innerText = 'Browser Not Supported';
+        }
+        if (dropBadge) {
+            dropBadge.className = 'text-[10px] px-1.5 py-0.5 rounded font-semibold bg-gray-100 text-gray-400';
+            dropBadge.innerText = 'Unsupported';
+        }
+        if (dropBtn) {
+            dropBtn.disabled = true;
+            dropBtn.className = 'text-gray-400 font-bold text-[11px] cursor-not-allowed';
+            dropBtn.innerText = 'Unavailable';
+        }
+        return;
+    }
+
+    if (webPushState.permission === 'denied') {
+        if (dashBadge) {
+            dashBadge.className = 'px-2.5 py-0.5 rounded-full text-[11px] font-bold bg-red-100 text-red-700';
+            dashBadge.innerText = 'Blocked';
+        }
+        if (dashBtn) {
+            dashBtn.disabled = true;
+            dashBtn.className = 'w-full py-2.5 px-4 rounded-xl font-label-md text-xs font-bold bg-gray-100 text-gray-500 cursor-not-allowed';
+            dashBtn.innerText = 'Notifications Blocked in Settings';
+        }
+        if (dropBadge) {
+            dropBadge.className = 'text-[10px] px-1.5 py-0.5 rounded font-semibold bg-red-100 text-red-600';
+            dropBadge.innerText = 'Blocked';
+        }
+        if (dropBtn) {
+            dropBtn.disabled = true;
+            dropBtn.className = 'text-gray-400 font-bold text-[11px] cursor-not-allowed';
+            dropBtn.innerText = 'Blocked';
+        }
+        return;
+    }
+
+    if (webPushState.subscribed) {
+        if (dashBadge) {
+            dashBadge.className = 'px-2.5 py-0.5 rounded-full text-[11px] font-bold bg-emerald-100 text-emerald-800';
+            dashBadge.innerText = 'Active';
+        }
+        if (dashBtn) {
+            dashBtn.disabled = webPushState.loading;
+            dashBtn.className = 'w-full py-2.5 px-4 rounded-xl font-label-md text-xs font-bold transition-all border border-gray-200 text-gray-700 hover:bg-gray-100';
+            dashBtn.innerText = webPushState.loading ? 'Updating...' : 'Disable Browser Notifications';
+        }
+        if (dropBadge) {
+            dropBadge.className = 'text-[10px] px-1.5 py-0.5 rounded font-semibold bg-emerald-100 text-emerald-700';
+            dropBadge.innerText = 'Active';
+        }
+        if (dropBtn) {
+            dropBtn.disabled = webPushState.loading;
+            dropBtn.className = 'text-gray-600 hover:text-red-600 font-bold text-[11px]';
+            dropBtn.innerText = webPushState.loading ? '...' : 'Disable';
+        }
+    } else {
+        if (dashBadge) {
+            dashBadge.className = 'px-2.5 py-0.5 rounded-full text-[11px] font-bold bg-gray-100 text-gray-600';
+            dashBadge.innerText = 'Off';
+        }
+        if (dashBtn) {
+            dashBtn.disabled = webPushState.loading;
+            dashBtn.className = 'w-full py-2.5 px-4 rounded-xl font-label-md text-xs font-bold transition-all bg-primary/10 text-primary hover:bg-primary hover:text-white';
+            dashBtn.innerText = webPushState.loading ? 'Enabling...' : 'Enable Browser Notifications';
+        }
+        if (dropBadge) {
+            dropBadge.className = 'text-[10px] px-1.5 py-0.5 rounded font-semibold bg-gray-100 text-gray-600';
+            dropBadge.innerText = 'Off';
+        }
+        if (dropBtn) {
+            dropBtn.disabled = webPushState.loading;
+            dropBtn.className = 'text-primary hover:underline font-bold text-[11px]';
+            dropBtn.innerText = webPushState.loading ? '...' : 'Enable';
+        }
+    }
+}
+
+async function checkWebPushStatus() {
+    if (!('serviceWorker' in navigator) || !('PushManager' in window) || !('Notification' in window)) {
+        webPushState.supported = false;
+        renderWebPushControls();
+        return;
+    }
+    webPushState.supported = true;
+    webPushState.permission = Notification.permission;
+
+    try {
+        const reg = await navigator.serviceWorker.getRegistration('/sw.js');
+        webPushState.swRegistration = reg;
+        if (reg) {
+            const sub = await reg.pushManager.getSubscription();
+            webPushState.subscribed = !!sub;
+        } else {
+            webPushState.subscribed = false;
+        }
+    } catch (e) {
+        console.warn("Could not check local PushManager subscription:", e);
+    }
+    renderWebPushControls();
+}
+
+async function toggleWebPush() {
+    if (webPushState.loading) return;
+    if (!webPushState.supported) {
+        showToast("Web Push is not supported in this browser.");
+        return;
+    }
+
+    if (webPushState.subscribed) {
+        // Unsubscribe
+        webPushState.loading = true;
+        renderWebPushControls();
+        try {
+            if (webPushState.swRegistration) {
+                const sub = await webPushState.swRegistration.pushManager.getSubscription();
+                if (sub) {
+                    await sub.unsubscribe();
+                    await authenticatedFetch(`${API_BASE}/notifications/push/unsubscribe`, {
+                        method: 'POST',
+                        body: JSON.stringify({ endpoint: sub.endpoint })
+                    });
+                }
+            }
+            webPushState.subscribed = false;
+            showToast("✓ Browser notifications disabled.");
+        } catch (e) {
+            console.error("Unsubscribe error:", e);
+            showToast("Failed to disable notifications.");
+        } finally {
+            webPushState.loading = false;
+            renderWebPushControls();
+        }
+    } else {
+        // Subscribe
+        webPushState.loading = true;
+        renderWebPushControls();
+        try {
+            // Request permission explicitly only on click
+            const perm = await Notification.requestPermission();
+            webPushState.permission = perm;
+            if (perm !== 'granted') {
+                showToast("Notification permission was not granted.");
+                webPushState.loading = false;
+                renderWebPushControls();
+                return;
+            }
+
+            // Fetch public VAPID key
+            const keyRes = await authenticatedFetch(`${API_BASE}/notifications/push/vapid-public-key`);
+            if (!keyRes || !keyRes.ok) {
+                showToast("Push notification server is currently unavailable.");
+                webPushState.loading = false;
+                renderWebPushControls();
+                return;
+            }
+            const keyData = await keyRes.json();
+            if (!keyData.configured || !keyData.public_key) {
+                showToast("Push notifications are not configured on this server.");
+                webPushState.loading = false;
+                renderWebPushControls();
+                return;
+            }
+
+            // Register service worker if needed
+            let reg = webPushState.swRegistration;
+            if (!reg) {
+                reg = await navigator.serviceWorker.register('/sw.js', { scope: '/' });
+                webPushState.swRegistration = reg;
+            }
+            await navigator.serviceWorker.ready;
+
+            // Subscribe via PushManager
+            const convertedKey = urlBase64ToUint8Array(keyData.public_key);
+            const subscription = await reg.pushManager.subscribe({
+                userVisibleOnly: true,
+                applicationServerKey: convertedKey
+            });
+
+            const subJson = subscription.toJSON();
+            const rawP256dh = subscription.getKey ? subscription.getKey('p256dh') : null;
+            const rawAuth = subscription.getKey ? subscription.getKey('auth') : null;
+            const p256dhStr = subJson.keys?.p256dh || (rawP256dh ? btoa(String.fromCharCode.apply(null, new Uint8Array(rawP256dh))) : '');
+            const authStr = subJson.keys?.auth || (rawAuth ? btoa(String.fromCharCode.apply(null, new Uint8Array(rawAuth))) : '');
+
+            const regRes = await authenticatedFetch(`${API_BASE}/notifications/push/subscribe`, {
+                method: 'POST',
+                body: JSON.stringify({
+                    endpoint: subscription.endpoint,
+                    keys: {
+                        p256dh: p256dhStr,
+                        auth: authStr
+                    },
+                    p256dh: p256dhStr,
+                    auth: authStr,
+                    user_agent: navigator.userAgent
+                })
+            });
+
+            if (regRes && regRes.ok) {
+                webPushState.subscribed = true;
+                showToast("✓ Browser push notifications enabled!");
+            } else {
+                showToast("Failed to register subscription with server.");
+                await subscription.unsubscribe();
+            }
+        } catch (e) {
+            console.error("Push subscribe error:", e);
+            showToast("Failed to enable notifications: " + (e.message || "Unknown error"));
+        } finally {
+            webPushState.loading = false;
+            renderWebPushControls();
+        }
+    }
+}
+
+function initWebPush() {
+    const dashBtn = document.getElementById('dashboard-push-toggle-btn');
+    if (dashBtn) {
+        dashBtn.onclick = (e) => {
+            e.preventDefault();
+            toggleWebPush();
+        };
+    }
+    checkWebPushStatus();
+}
+
+async function authenticatedFetch(url, options = {}, timeoutMs = 35000) {
     const token = getToken();
     if (!token && !url.includes('/auth/')) { window.location.href = '/login'; return null; }
     const headers = { 'Content-Type': 'application/json', ...options.headers };
     if (token) headers['Authorization'] = `Bearer ${token}`;
+    
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), timeoutMs);
     try {
-        const res = await fetch(url, { ...options, headers });
+        const res = await fetch(url, { ...options, headers, signal: controller.signal });
+        clearTimeout(timer);
         if (res.status === 401) { logout(); return null; }
         return res;
-    } catch(e) { console.error("Fetch failed:", e); return null; }
+    } catch(e) { 
+        clearTimeout(timer);
+        if (e.name === 'AbortError') {
+            console.error(`Request to ${url} timed out after ${timeoutMs}ms`);
+        } else {
+            console.error("Fetch failed:", e);
+        }
+        return null; 
+    }
 }
 
 // --- Hybrid Caching Layer ---
@@ -639,10 +930,10 @@ async function loadInsightsData() {
                 const indicator = createTypingIndicator();
                 chatHistory.appendChild(indicator);
                 chatHistory.scrollTop = chatHistory.scrollHeight;
-                const chatRes = await authenticatedFetch(`${API_BASE}/chat`, { method: 'POST', body: JSON.stringify({ message: msg }) });
-                if (chatRes) {
+                const chatRes = await authenticatedFetch(`${API_BASE}/chat`, { method: 'POST', body: JSON.stringify({ message: msg }) }, 50000);
+                indicator.remove();
+                if (chatRes && chatRes.ok) {
                     const chatData = await chatRes.json();
-                    indicator.remove();
                     await typeMessage(chatHistory, chatData.response);
                     if (chatData.schedule_updated && chatData.proposed_schedule) {
                         latestScheduleVersion++;
@@ -663,7 +954,10 @@ async function loadInsightsData() {
                             loadRoutineData(); 
                         }
                     }
-                } else { indicator.remove(); }
+                } else {
+                    await typeMessage(chatHistory, "Namaste. I am currently experiencing high network latency connecting to the reasoning cluster. Your routine remains safe and preserved. Please try again shortly. 🙏");
+                    showToast("Connection timed out. Please retry.");
+                }
             };
         }
     } catch(e) { console.error(e); }
@@ -766,6 +1060,7 @@ function initApp() {
     loadRoutineData();
     loadInsightsData();
     initNotifications();
+    initWebPush();
 }
 
 let appInitialized = false;

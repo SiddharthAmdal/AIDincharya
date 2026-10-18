@@ -11,3 +11,10 @@ dinacharya.db
 
 src/knowledge/data/chroma/
 
+# Ephemeral evaluation benchmark outputs
+reports/eval/eval_run_*.json
+reports/eval/agent_*.json
+reports/eval/rag_*.json
+reports/eval/safety_*.json
+reports/eval/grounding_*.json
+reports/eval/schedule_*.json

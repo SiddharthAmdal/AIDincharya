@@ -7,8 +7,9 @@ import json
 import logging
 from datetime import datetime
 from typing import Dict, Any, List, Optional
+from pydantic import BaseModel, Field
 from fastapi import FastAPI, HTTPException, Header, Depends
-from fastapi.responses import HTMLResponse, RedirectResponse
+from fastapi.responses import HTMLResponse, RedirectResponse, Response
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 
@@ -104,6 +105,23 @@ def reasoning_page():
 def onboarding_page():
     with open("src/static/onboarding.html", "r", encoding="utf-8") as f:
         return f.read()
+
+@app.get("/sw.js")
+def service_worker_route():
+    """
+    Serves the root Service Worker script with standard MIME type and root Service-Worker-Allowed header.
+    """
+    sw_file = os.path.join(os.path.dirname(__file__), "src", "static", "sw.js")
+    if not os.path.exists(sw_file):
+        raise HTTPException(status_code=404, detail="Service worker not found.")
+    with open(sw_file, "r", encoding="utf-8") as f:
+        content = f.read()
+    return Response(
+        content=content,
+        media_type="application/javascript",
+        headers={"Service-Worker-Allowed": "/", "Cache-Control": "no-cache"}
+    )
+
 
 # --- Authentication API ---
 @app.post("/api/auth/register", response_model=AuthResponse)
@@ -400,6 +418,8 @@ def chat_assistant(request: ChatRequest, user_id: int = Depends(get_current_user
         for idx, sym in enumerate(symptoms_list):
             symptoms_map[f"symptom_{idx}"] = sym
 
+        t_start = time.perf_counter()
+
         # 2. Perception: Generate profile
         profile = DoshaMapper.generate_profile(
             user_id=str(user_id), 
@@ -408,6 +428,7 @@ def chat_assistant(request: ChatRequest, user_id: int = Depends(get_current_user
             symptoms=symptoms_map
         )
 
+        t_rag_start = time.perf_counter()
         # 3. Retrieval: Fetch both constitutional guidelines and request-specific grounding passages
         context = UserContext(season="Balanced", weather="Pleasant", temperature_c=24.0, calendar_events=[], self_report_symptoms=symptoms_list)
         kb = AyurvedaKnowledgeBase()
@@ -514,13 +535,16 @@ def chat_assistant(request: ChatRequest, user_id: int = Depends(get_current_user
                     f"Would you like me to confirm and update your daily routine to **{best_alt}**? (Reply **Yes** to accept this recommended time, "
                     f"or **No** to keep your current schedule unchanged.)' Append [RECALIBRATE] at the end.\n"
                 )
+        t_rag = time.perf_counter() - t_rag_start
+
 
         system_prompt = (
             "You are a warm, wise traditional Ayurvedic physician (Vaidya).\n\n"
             "YOUR CONTEXT:\n"
             f"- SYSTEM CLOCK: The current time is {time.strftime('%Y-%m-%d %H:%M:%S')}.\n"
             f"- AUTHENTICATED USER ID: {user_id}\n"
-            "- WELLNESS VAULT: Access to user's Assessment Data, Adherence History, and Daily Schedule history.\n\n"
+            "- WELLNESS VAULT: Access to user's Assessment Data, Adherence History, and Daily Schedule history.\n"
+            "- GUIDELINE: Keep internal reasoning concise and output direct, empathetic markdown advice.\n\n"
             f"{q_text}\n"
             f"{routine_summary}\n"
             "AUTHENTIC AYURVEDIC & YOGIC KNOWLEDGE BASE:\n" + guidelines_text +
@@ -541,6 +565,23 @@ def chat_assistant(request: ChatRequest, user_id: int = Depends(get_current_user
         messages = [{"role": "system", "content": system_prompt}]
         for turn in db_history:
             messages.append({"role": turn["role"], "content": turn["content"]})
+
+        # Priority -1: Query Safety & Clinical Emergency Gate
+        t_guard_start = time.perf_counter()
+        from src.safety.guardrails import ClinicalRuleEngine
+        safety_verdict = ClinicalRuleEngine.evaluate_query_safety(request.message)
+        t_guard = time.perf_counter() - t_guard_start
+        if not safety_verdict["is_safe"]:
+            safety_msg = safety_verdict["message"]
+            db.save_chat_message(user_id, "user", request.message)
+            db.save_chat_message(user_id, "assistant", safety_msg)
+            return {
+                "response": safety_msg,
+                "proposed_schedule": None,
+                "schedule_updated": False,
+                "timestamp": time.time(),
+                "safety_alert": safety_verdict
+            }
 
         db.save_chat_message(user_id, "user", request.message)
         messages.append({"role": "user", "content": request.message})
@@ -608,12 +649,14 @@ def chat_assistant(request: ChatRequest, user_id: int = Depends(get_current_user
             return execute_planner_tool(t_name, t_args, caller_user_id=str(user_id))
 
         t_pre = state.get("schedule_timestamp", 0)
+        t_llm_start = time.perf_counter()
         chat_res = gateway.execute_tool_loop(
             messages=messages,
             tools=AVAILABLE_PLANNER_TOOLS,
             tool_executor_fn=bound_tool_executor,
             max_steps=3
         )
+        t_llm = time.perf_counter() - t_llm_start
         full_response = chat_res.content.strip()
 
         # Deterministic guardrail enforcement if LLM returned empty or failed to reject a contraindicated request
@@ -711,12 +754,26 @@ def chat_assistant(request: ChatRequest, user_id: int = Depends(get_current_user
                     proposed_schedule = val.model_dump()
 
         db.save_chat_message(user_id, "assistant", full_response)
+        t_total = time.perf_counter() - t_start
+
+        logger.info(
+            f"[/api/chat timing user={user_id}] Total={t_total:.2f}s | RAG={t_rag:.3f}s | "
+            f"Safety={t_guard:.3f}s | LLM={t_llm:.2f}s | Model={chat_res.model_used} | Fallback={chat_res.is_fallback}"
+        )
         
         return {
             "response": full_response, 
             "proposed_schedule": proposed_schedule,
             "schedule_updated": schedule_was_updated,
-            "timestamp": time.time()
+            "timestamp": time.time(),
+            "timings": {
+                "total_seconds": round(t_total, 2),
+                "rag_seconds": round(t_rag, 3),
+                "safety_seconds": round(t_guard, 3),
+                "llm_seconds": round(t_llm, 2),
+                "model_used": chat_res.model_used,
+                "is_fallback": chat_res.is_fallback
+            }
         }
 
     except Exception as e:
@@ -759,6 +816,133 @@ def mark_notification_read_route(
     """
     success = db.mark_notification_read(notification_id=notification_id, user_id=user_id)
     return {"success": success, "notification_id": notification_id}
+
+
+# --- Web Push Notification Endpoints (RFC 8292 / VAPID) ---
+
+class PushSubscribeRequest(BaseModel):
+    endpoint: str = Field(..., max_length=2048)
+    keys: Optional[Dict[str, str]] = None
+    p256dh: Optional[str] = Field(default=None, max_length=255)
+    auth: Optional[str] = Field(default=None, max_length=255)
+    user_agent: Optional[str] = Field(default=None, max_length=255)
+
+
+class PushUnsubscribeRequest(BaseModel):
+    endpoint: str = Field(..., max_length=2048)
+
+
+@app.get("/api/notifications/push/vapid-public-key")
+def get_vapid_public_key_route():
+    """
+    Returns the server's public VAPID key for creating browser push subscriptions.
+    Never exposes private keys.
+    """
+    from src.notifications.push_service import get_vapid_public_key, is_push_configured
+    key = get_vapid_public_key()
+    return {
+        "public_key": key,
+        "configured": is_push_configured()
+    }
+
+
+@app.get("/api/notifications/push/status")
+def get_push_status_route(user_id: int = Depends(get_current_user)):
+    """
+    Returns the Web Push subscription status for the authenticated user.
+    """
+    from src.notifications.push_service import is_push_configured
+    status = db.get_user_push_status(user_id)
+    return {
+        "configured": is_push_configured(),
+        "enabled": status["enabled"],
+        "subscription_count": status["subscription_count"]
+    }
+
+
+@app.post("/api/notifications/push/subscribe")
+def subscribe_push_route(
+    req: PushSubscribeRequest,
+    user_id: int = Depends(get_current_user)
+):
+    """
+    Registers a browser Web Push subscription scoped strictly to the authenticated user.
+    Enforces scheme validation (HTTPS or localhost) and key presence.
+    """
+    endpoint = req.endpoint.strip()
+    if not (endpoint.startswith("https://") or endpoint.startswith("http://localhost") or endpoint.startswith("http://127.0.0.1")):
+        raise HTTPException(status_code=400, detail="Invalid push endpoint scheme: HTTPS required.")
+    
+    p256dh = ""
+    auth = ""
+    if req.keys and isinstance(req.keys, dict):
+        p256dh = req.keys.get("p256dh", "").strip()
+        auth = req.keys.get("auth", "").strip()
+    if not p256dh and req.p256dh:
+        p256dh = req.p256dh.strip()
+    if not auth and req.auth:
+        auth = req.auth.strip()
+
+    if not p256dh or not auth:
+        raise HTTPException(status_code=400, detail="Incomplete subscription keys (p256dh and auth required).")
+
+    sub_id = db.save_push_subscription(
+        user_id=user_id,
+        endpoint=endpoint,
+        p256dh=p256dh,
+        auth=auth,
+        user_agent=req.user_agent
+    )
+    return {
+        "success": True,
+        "subscription_id": sub_id,
+        "message": "Web Push subscription registered successfully."
+    }
+
+
+@app.post("/api/notifications/push/unsubscribe")
+@app.delete("/api/notifications/push/unsubscribe")
+def unsubscribe_push_route(
+    req: PushUnsubscribeRequest,
+    user_id: int = Depends(get_current_user)
+):
+    """
+    Revokes an existing push subscription for the authenticated user.
+    Strictly user-isolated: user A cannot revoke user B's subscription.
+    """
+    endpoint = req.endpoint.strip()
+    deleted = db.delete_user_push_subscription(user_id=user_id, endpoint=endpoint)
+    return {
+        "success": deleted,
+        "message": "Push subscription revoked." if deleted else "Subscription not found or unauthorized."
+    }
+
+
+@app.post("/api/notifications/push/test")
+def test_push_route(user_id: int = Depends(get_current_user)):
+    """
+    Sends a test Web Push notification to the authenticated user's registered devices.
+    """
+    from src.notifications.push_service import send_push_notification_to_user, is_push_configured
+    if not is_push_configured():
+        return {
+            "success": False,
+            "configured": False,
+            "message": "Web Push is not configured on the server."
+        }
+    
+    res = send_push_notification_to_user(
+        user_id=user_id,
+        title="AI Dincharya Test",
+        body="Web Push is active! Your Ayurvedic schedule reminders will sync here.",
+        url="/routine",
+        tag="test-push-notification"
+    )
+    return {
+        "success": res.get("sent", 0) > 0,
+        "summary": res
+    }
+
 
 
 # --- Agent Adaptation Endpoint ---

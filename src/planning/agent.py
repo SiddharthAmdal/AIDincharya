@@ -222,6 +222,40 @@ class DinacharyaPlannerAgent:
         self.openai_client = self.gateway.client  # backward compatibility
         self.kb = AyurvedaKnowledgeBase()
 
+    def select_tool(self, user_message: str, context: Optional[Dict[str, Any]] = None) -> Optional[str]:
+        """
+        Determines the appropriate planner tool for a user query using the agent's decision path.
+        Returns the authorized tool name string or None if a direct conversational response / proposal is indicated.
+        """
+        msg = (user_message or "").strip().lower()
+
+        # 1. Schedule Mutation Requests: require conversational proposal formulation, NOT immediate tool execution
+        if any(kw in msg for kw in ["move my", "reschedule my", "shift my", "change my dinner", "change my routine", "adjust my time"]):
+            return None
+
+        # 2. Calendar Conflict Queries
+        if any(kw in msg for kw in ["conflict", "calendar", "meeting", "all-hands", "standup", "busy"]):
+            return "check_calendar_conflicts"
+
+        # 3. In-App Notification Requests
+        if any(kw in msg for kw in ["notification", "reminder", "remind me", "alert me"]):
+            return "request_user_notification"
+
+        # 4. Adherence History & Tracking Queries
+        if any(kw in msg for kw in ["adherence", "completion score", "tracking over", "last 7 days"]):
+            return "get_adherence_history"
+
+        # 5. Current Schedule & Profile Inspection
+        if any(kw in msg for kw in ["what activities are currently scheduled", "check what activities", "my current schedule", "view my routine", "my profile"]):
+            return "get_user_profile"
+
+        # 6. Authentic Ayurvedic Knowledge & Guideline Retrieval
+        if any(kw in msg for kw in ["recommend", "classical", "ayurveda", "dosha", "vata", "pitta", "kapha", "herb", "treatment", "dinacharya"]):
+            return "query_ayurvedic_knowledge"
+
+        # 7. Greetings / General Chitchat: Direct Conversational Response
+        return None
+
     def retrieve_guidelines_node(self, state: AgentState) -> AgentState:
         """
         Stage 1: Retrieval. Fetches top-k authentic Ayurvedic guidelines based on state

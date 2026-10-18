@@ -396,6 +396,20 @@ def persist_schedule_adaptation(
             idempotency_key=idemp_key
         )
 
+        # Optional Web Push dispatch (decoupled, non-blocking)
+        try:
+            from src.notifications.push_service import send_push_notification_to_user
+            send_push_notification_to_user(
+                user_id=uid_int,
+                title="Ayurvedic Routine Synchronized",
+                body=f"Your adapted routine for {target_date} has been confirmed and saved.",
+                url="/routine",
+                tag=idemp_key,
+                extra_data={"event_type": "adaptation_confirmed", "date": target_date}
+            )
+        except Exception as push_err:
+            logger.warning(f"Optional web push dispatch failed for user {uid_int}: {push_err}")
+
         return {
             "success": True,
             "user_id": user_id,
@@ -433,6 +447,21 @@ def request_user_notification(
             delivery_status="delivered",
             idempotency_key=idempotency_key
         )
+
+        # Optional Web Push dispatch (decoupled, non-blocking)
+        try:
+            from src.notifications.push_service import send_push_notification_to_user
+            send_push_notification_to_user(
+                user_id=uid_int,
+                title="Dinacharya Routine Reminder",
+                body=message,
+                url="/routine",
+                tag=idempotency_key or f"reminder-{uid_int}",
+                extra_data={"event_type": event_type, "activity_name": activity_name}
+            )
+        except Exception as p_err:
+            logger.debug(f"Web Push delivery attempt encountered error (in-app preserved): {p_err}")
+
         return {
             "success": True,
             "notification_id": notif_id,
@@ -460,6 +489,9 @@ def propose_schedule_adaptation(
     Enforces that proposals require explicit user confirmation before mutating vault state,
     and recommends reasoned alternative time slots if the requested slot violates principles.
     """
+    if not affected_activity or not isinstance(affected_activity, str) or not affected_activity.strip():
+        return {"valid": False, "error": "Missing required argument 'affected_activity'"}
+
     valid_change_types = {"reschedule", "skip", "shorten", "substitute"}
     if change_type not in valid_change_types:
         return {"valid": False, "error": f"Invalid change_type '{change_type}'. Must be one of {valid_change_types}"}

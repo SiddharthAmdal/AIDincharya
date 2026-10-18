@@ -103,6 +103,23 @@ def init_db():
             FOREIGN KEY (user_id) REFERENCES users (id)
         )
     ''')
+
+    # Browser push subscriptions table (Web Push API)
+    c.execute('''
+        CREATE TABLE IF NOT EXISTS push_subscriptions (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id INTEGER NOT NULL,
+            endpoint TEXT UNIQUE NOT NULL,
+            p256dh TEXT NOT NULL,
+            auth TEXT NOT NULL,
+            user_agent TEXT,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY (user_id) REFERENCES users (id)
+        )
+    ''')
+    c.execute('CREATE INDEX IF NOT EXISTS idx_push_subs_user_id ON push_subscriptions(user_id)')
+    c.execute('CREATE INDEX IF NOT EXISTS idx_push_subs_endpoint ON push_subscriptions(endpoint)')
     
     conn.commit()
     conn.close()
@@ -427,6 +444,104 @@ def mark_notification_read(notification_id: int, user_id: int) -> bool:
     conn.commit()
     conn.close()
     return affected > 0
+
+# --- Push Notification Subscription Methods ---
+
+def save_push_subscription(
+    user_id: int,
+    endpoint: str,
+    p256dh: str,
+    auth: str,
+    user_agent: Optional[str] = None
+) -> int:
+    """
+    Saves or updates a Web Push subscription for an authenticated user.
+    Enforces uniqueness on endpoint and updates keys/user if re-subscribed.
+    """
+    conn = get_db_connection()
+    c = conn.cursor()
+    c.execute('''
+        INSERT INTO push_subscriptions (user_id, endpoint, p256dh, auth, user_agent, updated_at)
+        VALUES (?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+        ON CONFLICT(endpoint) DO UPDATE SET
+            user_id = excluded.user_id,
+            p256dh = excluded.p256dh,
+            auth = excluded.auth,
+            user_agent = excluded.user_agent,
+            updated_at = CURRENT_TIMESTAMP
+    ''', (user_id, endpoint, p256dh, auth, user_agent))
+    subscription_id = c.lastrowid
+    conn.commit()
+    conn.close()
+    return subscription_id
+
+def get_user_push_subscriptions(user_id: int) -> List[Dict[str, Any]]:
+    """
+    Returns active browser push subscriptions scoped to the authenticated user.
+    """
+    conn = get_db_connection()
+    c = conn.cursor()
+    c.execute('''
+        SELECT id, user_id, endpoint, p256dh, auth, user_agent, created_at, updated_at
+        FROM push_subscriptions
+        WHERE user_id = ?
+        ORDER BY updated_at DESC
+    ''', (user_id,))
+    rows = c.fetchall()
+    conn.close()
+    return [
+        {
+            "id": r["id"],
+            "user_id": r["user_id"],
+            "endpoint": r["endpoint"],
+            "p256dh": r["p256dh"],
+            "auth": r["auth"],
+            "user_agent": r["user_agent"],
+            "created_at": r["created_at"],
+            "updated_at": r["updated_at"]
+        }
+        for r in rows
+    ]
+
+def delete_user_push_subscription(user_id: int, endpoint: str) -> bool:
+    """
+    Revokes an authenticated user's push subscription by endpoint.
+    Strictly isolated: user A cannot delete user B's subscription.
+    """
+    conn = get_db_connection()
+    c = conn.cursor()
+    c.execute('DELETE FROM push_subscriptions WHERE user_id = ? AND endpoint = ?', (user_id, endpoint))
+    affected = c.rowcount
+    conn.commit()
+    conn.close()
+    return affected > 0
+
+def delete_push_subscription_by_endpoint(endpoint: str) -> bool:
+    """
+    Removes an expired or invalid subscription when push provider returns 404 or 410 Gone.
+    """
+    conn = get_db_connection()
+    c = conn.cursor()
+    c.execute('DELETE FROM push_subscriptions WHERE endpoint = ?', (endpoint,))
+    affected = c.rowcount
+    conn.commit()
+    conn.close()
+    return affected > 0
+
+def get_user_push_status(user_id: int) -> Dict[str, Any]:
+    """
+    Returns the push subscription status for an authenticated user.
+    """
+    conn = get_db_connection()
+    c = conn.cursor()
+    c.execute('SELECT COUNT(*) as count FROM push_subscriptions WHERE user_id = ?', (user_id,))
+    row = c.fetchone()
+    conn.close()
+    count = row["count"] if row else 0
+    return {
+        "enabled": count > 0,
+        "subscription_count": count
+    }
 
 # Initialize on import
 init_db()

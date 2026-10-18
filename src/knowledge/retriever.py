@@ -247,3 +247,31 @@ class AyurvedaKnowledgeBase:
                 break
         return merged
 
+    def query_text(self, query: str, k: int = 5) -> List[Dict[str, Any]]:
+        """
+        Direct semantic retrieval for arbitrary text queries against ChromaDB collection.
+        Returns retrieved document chunks with metadata and distances.
+        """
+        try:
+            results = self.collection.query(
+                query_texts=[query],
+                n_results=k,
+                include=["documents", "distances"]
+            )
+            retrieved = []
+            if results and 'documents' in results and len(results['documents']) > 0:
+                docs = results['documents'][0]
+                dists = results['distances'][0] if 'distances' in results and results['distances'] else [0.0]*len(docs)
+                ids = results['ids'][0] if 'ids' in results and results['ids'] else [f"id_{i}" for i in range(len(docs))]
+                for doc_id, doc, dist in zip(ids, docs, dists):
+                    retrieved.append({
+                        "id": doc_id,
+                        "text": doc,
+                        "distance": dist,
+                        "source": "Core Dinacharya Grounding PDF"
+                    })
+            return retrieved
+        except Exception as e:
+            print(f"RAG query_text Error: {e}")
+            return []
+

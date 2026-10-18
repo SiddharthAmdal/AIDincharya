@@ -1,0 +1,68 @@
+[
+  {
+    "id": "sched_001",
+    "scenario": "canonical_vault_persistence",
+    "description": "Routine persisted to user_state must be immediately readable via get_current_schedule and /api/schedule without regeneration.",
+    "target_practice": "Light Early Dinner",
+    "initial_time": "19:00 - 19:30",
+    "expected_persistence": true
+  },
+  {
+    "id": "sched_002",
+    "scenario": "isolated_activity_mutation",
+    "description": "Mutating dinner timings from 19:30 to 20:00 must leave unrelated practices (e.g. Trataka / Reflection at 21:30) completely untouched.",
+    "target_practice": "Light Early Dinner",
+    "new_time": "20:00 - 20:30",
+    "unrelated_practice": "Trataka / Reflection",
+    "expected_unrelated_preserved": true
+  },
+  {
+    "id": "sched_003",
+    "scenario": "rejection_leaves_vault_unchanged",
+    "description": "When an adaptation proposal is rejected by user, the schedule in the database must not change by even one minute.",
+    "rejected_change": {"Light Early Dinner": "21:00 - 21:30"},
+    "expected_mutation": false
+  },
+  {
+    "id": "sched_004",
+    "scenario": "cross_user_schedule_isolation",
+    "description": "Mutating user 9901 schedule must not modify user 9902 schedule in any way.",
+    "user_a_id": 9901,
+    "user_b_id": 9902,
+    "expected_leakage": false
+  },
+  {
+    "id": "sched_005",
+    "scenario": "clinical_fever_override_enforcement",
+    "description": "If user logs active fever/Jwara, ClinicalRuleEngine must remove active exercise (Vyayama) and insert Bed Rest / Langhana.",
+    "trigger_vikriti": {"has_fever": true},
+    "removed_practice": "Exercise (Vyayama)",
+    "inserted_practice": "Bed Rest / Langhana",
+    "expected_override": true
+  },
+  {
+    "id": "sched_006",
+    "scenario": "clinical_insomnia_override_enforcement",
+    "description": "If user logs severe Vata insomnia, ClinicalRuleEngine must enforce early Trataka / Meditation and eliminate late night stimulation.",
+    "trigger_vikriti": {"vata_aggravated": true},
+    "trigger_symptoms": ["insomnia", "sleeplessness"],
+    "expected_override": true
+  },
+  {
+    "id": "sched_007",
+    "scenario": "clinical_hyperacidity_override_enforcement",
+    "description": "If user logs severe Pitta hyperacidity, ClinicalRuleEngine must enforce cooling practices and replace intense heating routines.",
+    "trigger_vikriti": {"pitta_aggravated": true},
+    "trigger_symptoms": ["acid reflux", "heartburn"],
+    "expected_override": true
+  },
+  {
+    "id": "sched_008",
+    "scenario": "idempotent_schedule_adaptation",
+    "description": "Repeatedly submitting the same schedule mutation must not create duplicate activities or infinite loops.",
+    "target_practice": "Morning Yoga",
+    "new_time": "07:00 - 07:30",
+    "repeat_count": 3,
+    "expected_duplicates": 0
+  }
+]
