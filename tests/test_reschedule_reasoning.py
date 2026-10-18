@@ -324,3 +324,122 @@ def test_dynamic_categories_bath_after_meal_and_abhyanga_sequence_and_valid_trat
     )
     assert trataka_eval["is_valid"] is True
     assert len(trataka_eval["violations"]) == 0
+
+
+def test_practice_category_classifier_resists_description_meal_keywords():
+    """
+    Ensures practices whose descriptions mention 'before breakfast', 'after meals', or 'food'
+    are never misclassified as AHARA_MEAL.
+    """
+    from src.safety.guardrails import _classify_practice_category
+
+    assert (
+        _classify_practice_category(
+            "Nadi Shodhana Pranayama",
+            "Practice on an empty stomach before breakfast or at least 2 hours after a meal/food.",
+        )
+        == "PRANAYAMA_YOGA"
+    )
+    assert (
+        _classify_practice_category(
+            "Abhyanga (Warm Oil Massage)",
+            "Perform in the morning before bath and before eating breakfast.",
+        )
+        == "ABHYANGA_OLEATION"
+    )
+    assert (
+        _classify_practice_category(
+            "Jihwa Nirlekhana & Gandusha",
+            "Tongue scraping and oil pulling on an empty stomach before food.",
+        )
+        == "MORNING_KRIYA"
+    )
+
+
+def test_from_x_to_y_phrasing_and_bare_730_disambiguation(isolated_env):
+    """
+    Verifies:
+    1. 'Can I move pranayama from 6:30 AM to 7:30 PM?' extracts '19:30 - 19:45' (not '06:30 - 19:30').
+    2. 'Can I do pranayama at 7:30?' (bare time without 'PM', exactly as mentor phrased it)
+       contextually disambiguates to 19:30 - 19:45 (right after 19:00 - 19:30 dinner) and is rejected.
+    """
+    client = isolated_env
+    uid, headers, _ = _create_user_with_mentor_schedule(client, "mentor_bare_730")
+
+    extracted = extract_practice_time_updates(
+        "Can I move Nadi Shodhana Pranayama from 6:30 AM to 7:30 PM?",
+        ["Nadi Shodhana Pranayama"],
+    )
+    assert extracted.get("Nadi Shodhana Pranayama") == "19:30 - 19:45"
+
+    # Bare "7:30" without PM in chat
+    res = client.post(
+        "/api/chat",
+        json={"message": "Can I do pranayama at 7:30?"},
+        headers=headers,
+    )
+    assert res.status_code == 200
+    body = res.json()
+    assert body["schedule_updated"] is False
+    assert "19:30 - 19:45" in body["response"]
+    assert "cannot recommend" in body["response"].lower() or "empty stomach" in body["response"].lower()
+
+
+def test_insistence_vs_counter_proposal_and_alternative_validity_invariant(isolated_env):
+    """
+    Verifies:
+    1. Every recommended alternative returned by evaluate_reschedule_request is itself 100% valid.
+    2. Replying 'No, I would like this time' (insisting on the contraindicated slot) keeps the schedule unchanged
+       and explains the Bhuktavastu guardrail.
+    3. Replying 'No, I would like 9:00 PM' (a safe counter-proposal 90 mins after 19:00-19:30 dinner)
+       is evaluated as a valid new slot (21:00 - 21:15) and staged for confirmation.
+    """
+    client = isolated_env
+    uid, headers, sched_dict = _create_user_with_mentor_schedule(client, "mentor_counter_prop")
+    sched_obj = DinacharyaSchedule(**sched_dict)
+
+    # Check invariant: all recommended alternatives for rejected requests must pass evaluate_reschedule_request
+    for act, bad_slot in [
+        ("Nadi Shodhana Pranayama", "19:30 - 19:45"),
+        ("Snana (Warm Bath)", "13:30 - 13:50"),
+        ("Abhyanga (Warm Oil Massage)", "08:00 - 08:20"),
+    ]:
+        ev = ClinicalRuleEngine.evaluate_reschedule_request(
+            schedule=sched_obj,
+            activity_name=act,
+            proposed_slot=bad_slot,
+            use_llm=False,
+        )
+        assert ev["is_valid"] is False
+        assert len(ev["recommended_alternatives"]) >= 1
+        for alt in ev["recommended_alternatives"]:
+            recheck = ClinicalRuleEngine.evaluate_reschedule_request(
+                schedule=sched_obj,
+                activity_name=act,
+                proposed_slot=alt["proposed_slot"],
+                use_llm=False,
+            )
+            assert recheck["is_valid"] is True, (
+                f"Alternative {alt['proposed_slot']} for {act} failed validation: {recheck['violated_principles']}"
+            )
+
+    # Turn 1: Ask for 7:30 PM Pranayama
+    r1 = client.post("/api/chat", json={"message": "Can I do pranayama at 7:30 PM?"}, headers=headers)
+    assert r1.status_code == 200
+    assert r1.json()["schedule_updated"] is False
+
+    # Turn 2a: Insist on the unsafe slot ("No, I would like this time")
+    r2 = client.post("/api/chat", json={"message": "No, I would like this time"}, headers=headers)
+    assert r2.status_code == 200
+    b2 = r2.json()
+    assert b2["schedule_updated"] is False
+    assert "cannot schedule it directly after your meal" in b2["response"].lower()
+
+    # Turn 2b: Propose a safe counter-time ("No, I would like 9:00 PM")
+    r3 = client.post("/api/chat", json={"message": "No, I would like 9:00 PM"}, headers=headers)
+    assert r3.status_code == 200
+    b3 = r3.json()
+    assert b3["schedule_updated"] is False
+    assert "21:00 - 21:15" in b3["response"]
+    assert b3["proposed_schedule"] is not None
+

@@ -88,4 +88,10 @@ def build_llm_client(
 
 
 def configured_gemini_keys() -> list[str]:
-    return [key.strip() for key in os.getenv("GEMINI_API_KEYS", "").split(",") if key.strip()]
+    single = os.getenv("GEMINI_API_KEY", "").strip()
+    multi = [key.strip() for key in os.getenv("GEMINI_API_KEYS", "").split(",") if key.strip()]
+    keys = []
+    for k in ([single] if single else []) + multi:
+        if k and k not in keys:
+            keys.append(k)
+    return keys

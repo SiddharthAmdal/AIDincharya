@@ -16,7 +16,9 @@ from openai import OpenAI, APITimeoutError, APIConnectionError, RateLimitError, 
 from src.config import (
     PUTER_BASE_URL, PUTER_API_KEY,
     NVIDIA_BASE_URL, NVIDIA_API_KEY,
-    LLM_PROVIDER, DEFAULT_MODEL, FALLBACK_MODEL
+    GEMINI_BASE_URL, GEMINI_API_KEY,
+    LLM_PROVIDER, DEFAULT_MODEL, FALLBACK_MODEL,
+    THIRD_FALLBACK_MODEL, get_valid_gemini_keys
 )
 
 logger = logging.getLogger("LLMGateway")
@@ -37,28 +39,75 @@ class LLMResponse:
 class LLMGateway:
     """
     Unified, reliable adapter for LLM calls across AI Dincharya workflows (Planner, Chat, Insights).
+    Supports a 3-tier model/provider failover chain:
+      1. Primary Model (e.g. nvidia/nemotron-3.5-lightning-30b-a3b on NVIDIA NIM)
+      2. Secondary Fallback Model (e.g. openai/gpt-oss-20b on NVIDIA NIM)
+      3. Third Fallback Provider (e.g. gemini-3.5-flash-lite on Google AI Studio Gemini API)
     """
 
     _instance: Optional["LLMGateway"] = None
 
     def __init__(self):
-        llm_timeout = float(os.getenv("LLM_TIMEOUT", "22.0"))
+        self.llm_timeout = float(os.getenv("LLM_TIMEOUT", "22.0"))
+        self._gemini_key_idx = 0
+
         if LLM_PROVIDER == "nvidia":
             self.client = OpenAI(
                 base_url=NVIDIA_BASE_URL,
                 api_key=NVIDIA_API_KEY,
-                timeout=llm_timeout,
+                timeout=self.llm_timeout,
                 max_retries=0  # Prevents invisible 3x retry multiplication inside OpenAI SDK
+            )
+        elif LLM_PROVIDER == "gemini":
+            valid_keys = get_valid_gemini_keys()
+            initial_key = valid_keys[0] if valid_keys else (GEMINI_API_KEY or "missing_gemini_key")
+            self.client = OpenAI(
+                base_url=GEMINI_BASE_URL,
+                api_key=initial_key,
+                timeout=self.llm_timeout,
+                max_retries=0
             )
         else:
             self.client = OpenAI(
                 base_url=PUTER_BASE_URL,
                 api_key=PUTER_API_KEY,
-                timeout=llm_timeout,
+                timeout=self.llm_timeout,
                 max_retries=0
             )
         self.primary_model = DEFAULT_MODEL
         self.fallback_model = FALLBACK_MODEL
+        self.third_fallback_model = THIRD_FALLBACK_MODEL
+        self.gemini_client: Optional[OpenAI] = self._build_gemini_client()
+
+    def _build_gemini_client(self) -> Optional[OpenAI]:
+        """Builds an OpenAI-compatible client for Google AI Studio Gemini API if a key is available."""
+        valid_keys = get_valid_gemini_keys()
+        if not valid_keys:
+            return None
+        key = valid_keys[self._gemini_key_idx % len(valid_keys)]
+        self._gemini_key_idx += 1
+        return OpenAI(
+            base_url=os.getenv("GEMINI_BASE_URL", GEMINI_BASE_URL),
+            api_key=key,
+            timeout=self.llm_timeout,
+            max_retries=0
+        )
+
+    def _is_gemini_model(self, model_name: str) -> bool:
+        """Returns True if the target model should be routed to Google AI Studio's Gemini API."""
+        if not model_name:
+            return False
+        m = model_name.lower()
+        return m.startswith("gemini-") or m == self.third_fallback_model.lower()
+
+    def _get_client_for_model(self, target_model: str) -> OpenAI:
+        """Selects the appropriate provider OpenAI client for the given target model."""
+        if self._is_gemini_model(target_model) and LLM_PROVIDER != "gemini":
+            client = self._build_gemini_client() or self.gemini_client
+            if client is not None:
+                self.gemini_client = client
+                return client
+        return self.client
 
     @classmethod
     def get_instance(cls) -> "LLMGateway":
@@ -70,7 +119,7 @@ class LLMGateway:
         if isinstance(exc, (APITimeoutError, APIConnectionError, RateLimitError, InternalServerError)):
             return True
         msg = str(exc).lower()
-        return any(term in msg for term in ("timeout", "rate limit", "too many requests", "503", "502", "500", "connection"))
+        return any(term in msg for term in ("timeout", "rate limit", "too many requests", "quota", "503", "502", "500", "429", "connection"))
 
     def create_chat_completion(
         self,
@@ -84,19 +133,26 @@ class LLMGateway:
         retries_per_model: int = 2
     ) -> LLMResponse:
         """
-        Executes a chat completion with automatic model fallback and bounded retries.
+        Executes a chat completion with automatic 3-tier model/provider fallback and bounded retries.
         """
         models_to_try = [model or self.primary_model]
         if self.fallback_model and self.fallback_model not in models_to_try:
             models_to_try.append(self.fallback_model)
+        if (
+            self.third_fallback_model
+            and self.third_fallback_model not in models_to_try
+            and (get_valid_gemini_keys() or self.gemini_client is not None)
+        ):
+            models_to_try.append(self.third_fallback_model)
 
         last_error = None
 
         for idx, target_model in enumerate(models_to_try):
-            is_fallback = (idx > 0) or (target_model == self.fallback_model)
+            is_fallback = (idx > 0) or (target_model in (self.fallback_model, self.third_fallback_model))
             for attempt in range(1, retries_per_model + 1):
                 start_time = time.perf_counter()
                 try:
+                    active_client = self._get_client_for_model(target_model)
                     kwargs: Dict[str, Any] = {
                         "model": target_model,
                         "messages": messages,
@@ -117,7 +173,7 @@ class LLMGateway:
 
                     call_timeout = float(os.getenv("FALLBACK_LLM_TIMEOUT", "30.0")) if is_fallback else float(os.getenv("PRIMARY_LLM_TIMEOUT", "14.0"))
                     kwargs["timeout"] = call_timeout
-                    resp = self.client.chat.completions.create(**kwargs)
+                    resp = active_client.chat.completions.create(**kwargs)
                     elapsed = time.perf_counter() - start_time
                     choice = resp.choices[0]
                     msg = choice.message
@@ -131,6 +187,7 @@ class LLMGateway:
                     if not content and reasoning and not msg.tool_calls:
                         content = reasoning.strip()
 
+                    self.last_model_used = target_model
                     return LLMResponse(
                         content=content,
                         reasoning_content=reasoning,
@@ -148,7 +205,7 @@ class LLMGateway:
                     logger.warning(
                         f"LLM request failed on model '{target_model}' (attempt {attempt}/{retries_per_model}) in {elapsed:.2f}s: {exc}"
                     )
-                    # If primary model timed out and a fallback model exists, fail over immediately
+                    # If current model timed out and a fallback model exists, fail over immediately
                     if (isinstance(exc, APITimeoutError) or "timeout" in str(exc).lower()) and (idx + 1 < len(models_to_try)):
                         logger.info(f"Model '{target_model}' timed out in {elapsed:.2f}s. Immediately failing over to '{models_to_try[idx+1]}'.")
                         break

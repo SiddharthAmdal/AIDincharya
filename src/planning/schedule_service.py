@@ -135,6 +135,12 @@ def mutate_user_schedule(
     validated = ClinicalRuleEngine.validate(candidate, profile)
 
     val_dump = validated.model_dump()
+    applied_updates: Dict[str, str] = {}
+    for blk_key in ["morning_block", "midday_block", "evening_block"]:
+        for p_item in val_dump.get(blk_key, []):
+            if p_item.get("name") in matched_practices:
+                applied_updates[p_item["name"]] = p_item.get("time_slot", "")
+
     canonical_data = {
         "schedule": val_dump,
         "morning_block": val_dump.get("morning_block", []),
@@ -185,5 +191,6 @@ def mutate_user_schedule(
         "schedule": canonical_data["schedule"],
         "canonical_data": canonical_data,
         "matched_practices": matched_practices,
+        "applied_updates": applied_updates,
         "persisted_date": target_date
     }

@@ -107,11 +107,34 @@ def extract_practice_time_updates(text: str, practice_names: List[str]) -> Dict[
 
             if not re.search(pattern, line, re.IGNORECASE):
                 continue
-            line_lower = line.lower()
-            slots = re.findall(time_slot_regex, line)
+            # Strip 'from <old_time_or_slot> to ' transition prefixes so 'from 6:30 AM to 7:30 PM'
+            # or 'from 19:00 - 19:30 to 20:00' extracts the target time ('7:30 PM' / '20:00') rather than the old time
+            line_clean = re.sub(
+                r"\bfrom\s+(?:(?:[01]?\d|2[0-3]):[0-5]\d|\d{1,2})(?:\s*(?:AM|PM|am|pm))?(?:\s*(?:-|–|—)\s*(?:[01]?\d|2[0-3]):[0-5]\d(?:\s*(?:AM|PM|am|pm))?)?\s+to\s+",
+                "to ",
+                line,
+                flags=re.IGNORECASE,
+            )
+            line_lower = line_clean.lower()
+            slots = re.findall(time_slot_regex, line_clean)
+            if slots:
+                # Guard against a 'to' phrase spanning > 120 minutes (e.g. '6:30 AM to 7:30 PM')
+                from src.safety.guardrails import _parse_slot_minutes, _format_minutes_to_slot
+                valid_slots = []
+                for raw_s in slots:
+                    std_s = standardize_slot(raw_s)
+                    parsed_s = _parse_slot_minutes(std_s, 15)
+                    if parsed_s and (parsed_s[1] - parsed_s[0]) > 120 and re.search(r"\bto\b", raw_s, re.IGNORECASE):
+                        rhs = re.split(r"\bto\b", raw_s, flags=re.IGNORECASE)[-1].strip()
+                        rhs_parsed = _parse_slot_minutes(rhs, 15)
+                        if rhs_parsed:
+                            valid_slots.append(_format_minutes_to_slot(rhs_parsed[0], rhs_parsed[1]))
+                    else:
+                        valid_slots.append(std_s)
+                slots = valid_slots
             if not slots:
-                # Check for single time mention like "at 7:30 PM" or "at 19:30"
-                singles = re.findall(single_time_regex, line)
+                # Check for single time mention like "at 7:30 PM" or "at 19:30" or "to 8 PM"
+                singles = re.findall(single_time_regex, line_clean)
                 if singles:
                     from src.safety.guardrails import _parse_slot_minutes, _format_minutes_to_slot
                     parsed = _parse_slot_minutes(singles[-1], 15)
@@ -387,7 +410,9 @@ JSON STRUCTURE (Return ONLY valid JSON):
             )
 
             state["is_fallback"] = is_fallback
-            state["model_used"] = self.gateway.fallback_model if is_fallback else self.gateway.primary_model
+            state["model_used"] = getattr(self.gateway, "last_model_used", None) or (
+                self.gateway.fallback_model if is_fallback else self.gateway.primary_model
+            )
 
             def parse_block(block_name):
                 practices = []

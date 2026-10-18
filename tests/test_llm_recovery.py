@@ -128,6 +128,46 @@ def test_gateway_fallback_trigger_on_failure():
         gateway.create_chat_completion = orig_fn
 
 
+def test_gateway_third_fallback_to_gemini_provider(monkeypatch):
+    """
+    Verify LLMGateway fails over to the 3rd fallback provider (Google AI Studio Gemini API
+    with gemini-3.5-flash-lite) when both the primary and secondary NVIDIA models fail.
+    """
+    monkeypatch.setenv("GEMINI_API_KEY", "test_valid_ai_studio_gemini_key")
+    gateway = LLMGateway()
+
+    # Primary client (NVIDIA) fails for both primary and secondary models
+    mock_primary_client = MagicMock()
+    mock_primary_client.chat.completions.create.side_effect = RuntimeError("timeout on primary provider")
+    gateway.client = mock_primary_client
+
+    # Third fallback client (Google AI Studio Gemini) succeeds
+    mock_gemini_client = MagicMock()
+    mock_msg = MagicMock()
+    mock_msg.content = '{"status": "recovered_via_gemini"}'
+    mock_msg.reasoning_content = None
+    mock_msg.tool_calls = None
+    mock_choice = MagicMock()
+    mock_choice.message = mock_msg
+    mock_resp = MagicMock()
+    mock_resp.choices = [mock_choice]
+    mock_resp.usage.prompt_tokens = 12
+    mock_resp.usage.completion_tokens = 8
+    mock_gemini_client.chat.completions.create.return_value = mock_resp
+
+    gateway._build_gemini_client = MagicMock(return_value=mock_gemini_client)
+    gateway.gemini_client = mock_gemini_client
+
+    res = gateway.create_chat_completion(
+        messages=[{"role": "user", "content": "Hello"}],
+        retries_per_model=1
+    )
+    assert res.is_fallback is True
+    assert res.model_used == "gemini-3.5-flash-lite"
+    assert res.content == '{"status": "recovered_via_gemini"}'
+    assert mock_gemini_client.chat.completions.create.call_count == 1
+
+
 def test_tool_execution_dispatcher():
     """
     Verify execute_planner_tool dispatches authorized functions and enforces permission checks.

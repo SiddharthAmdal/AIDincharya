@@ -450,11 +450,28 @@ def chat_assistant(request: ChatRequest, user_id: int = Depends(get_current_user
             "make the change", "update it", "looks good", "sounds good"
         ]) or (user_msg_lower in ["yes", "y", "sure", "ok", "okay", "agreed", "done"])
 
-        is_rejection = any(term in user_msg_lower for term in [
-            "reject", "decline", "cancel", "no, don't", "no dont", "keep my original", 
-            "keep original", "don't change", "dont change", "leave it", "keep as is",
-            "no, i would like", "no i would like"
-        ]) or (user_msg_lower in ["no", "n", "nope", "nevermind"])
+        # Distinguish flat rejection vs insisting on the rejected unsafe slot ("No, I would like this time")
+        # vs proposing a new counter-time ("No, I would like 9:00 PM")
+        has_time_in_msg = bool(
+            re.search(r"\b(?:[01]?\d|2[0-3]):[0-5]\d\b|\b\d{1,2}\s*(?:am|pm)\b", user_msg_lower, re.IGNORECASE)
+        )
+        is_insistence_on_rejected = any(term in user_msg_lower for term in [
+            "no, i would like this time", "no i would like this time",
+            "no, i want this time", "no i want this time",
+            "no, i would like that time", "no i would like that time",
+            "i still want this time", "keep 7:30", "do it anyway"
+        ])
+        is_rejection = (
+            any(term in user_msg_lower for term in [
+                "reject", "decline", "cancel", "no, don't", "no dont", "keep my original", 
+                "keep original", "keep my current", "don't change", "dont change", "leave it", "keep as is"
+            ])
+            or (user_msg_lower in ["no", "n", "nope", "nevermind"])
+            or (
+                any(term in user_msg_lower for term in ["no, i would like", "no i would like"])
+                and not has_time_in_msg
+            )
+        )
 
         last_assistant_msg = ""
         for turn in reversed(db_history):
@@ -477,35 +494,42 @@ def chat_assistant(request: ChatRequest, user_id: int = Depends(get_current_user
 
         from src.planning.agent import extract_practice_time_updates, standardize_slot
         precheck_eval = None
-        if not is_acceptance and not is_rejection and p_names_all:
+        if not is_acceptance and not is_rejection and not is_insistence_on_rejected and p_names_all:
             user_requested_updates = extract_practice_time_updates(request.message, p_names_all)
             if not user_requested_updates:
                 # Check if user mentioned a generic practice keyword (e.g. "pranayama", "bath", "massage", "exercise", "dinner")
                 # that might not yet be in p_names_all or is a substring
                 generic_candidates = ["Pranayama", "Abhyanga", "Snana (Bath)", "Vyayama (Exercise)", "Light Early Dinner", "Mitahara", "Trataka"]
                 user_requested_updates = extract_practice_time_updates(request.message, p_names_all + generic_candidates)
+            if not user_requested_updates and has_time_in_msg and db_history:
+                # Counter-proposal follow-up (e.g. "No, I would like 9:00 PM" where the practice name was in a prior turn)
+                prev_act = None
+                for turn in reversed(db_history):
+                    t_content = turn.get("content", "")
+                    prev_updates = extract_practice_time_updates(t_content, p_names_all)
+                    if prev_updates:
+                        prev_act = next(iter(prev_updates.keys()))
+                        break
+                    for cand_p in p_names_all:
+                        if cand_p and cand_p.lower() in t_content.lower():
+                            prev_act = cand_p
+                            break
+                    if prev_act:
+                        break
+                if prev_act:
+                    synthetic_line = f"Move {prev_act} to {request.message}"
+                    user_requested_updates = extract_practice_time_updates(synthetic_line, [prev_act])
+
             if user_requested_updates:
                 req_act, req_slot = next(iter(user_requested_updates.items()))
-                # Handle ambiguous bare times like "7:30" when user's evening schedule has dinner at 19:00-19:30
-                if re.match(r"^0[1-9]:\d{2}\s*-\s*0[1-9]:\d{2}$", req_slot) and not re.search(r"\b(am|morning)\b", request.message, re.IGNORECASE):
-                    # Check if 19:30 (evening) is adjacent to an evening activity or if the practice is already in morning at ~07:00
-                    from src.safety.guardrails import _parse_slot_minutes, _format_minutes_to_slot
-                    parsed_am = _parse_slot_minutes(req_slot)
-                    if parsed_am and 6 * 60 <= parsed_am[0] <= 10 * 60:
-                        # If user says "7:30" and they already have morning routine at 6-7am or dinner at 19:00-19:30
-                        if any(k in request.message.lower() for k in ["dinner", "evening", "night", "pm", "tonight"]) or any(
-                            (p.get("name", "") if isinstance(p, dict) else p.name) == req_act and "07:" in (p.get("time_slot", "") if isinstance(p, dict) else p.time_slot)
-                            for p in all_practices
-                        ):
-                            req_slot = _format_minutes_to_slot(parsed_am[0] + 12 * 60, parsed_am[1] + 12 * 60)
-
                 precheck_eval = ClinicalRuleEngine.evaluate_reschedule_request(
                     activity_name=req_act,
                     proposed_slot=req_slot,
                     current_schedule=cached_sched,
                     profile=profile,
                     symptoms=symptoms_list,
-                    use_llm=False
+                    use_llm=False,
+                    user_message=request.message
                 )
                 for cit in precheck_eval.get("retrieved_citations", []):
                     guidelines_text += f"\n- [{cit['source']}] {cit['excerpt']}"
@@ -585,6 +609,24 @@ def chat_assistant(request: ChatRequest, user_id: int = Depends(get_current_user
         db.save_chat_message(user_id, "user", request.message)
         messages.append({"role": "user", "content": request.message})
 
+        # Insistence on a rejected/contraindicated time slot ("No, I would like this time"):
+        # Hold the clinical safety guardrail firm, explain that the meal itself would need to move first, and keep schedule unchanged
+        if is_insistence_on_rejected and last_assistant_msg:
+            insist_text = (
+                "I understand your preference for that time window. However, because classical Ayurvedic (*Bhuktavastu* / *Ashtanga Hrdayam*) "
+                "and Ministry of AYUSH guidelines strictly contraindicate practicing Pranayama, Vyayama, Abhyanga, or Snana immediately after a meal "
+                "(to protect *Jatharagni* and *Samana Vayu*), I cannot schedule it directly after your meal. "
+                "Your current daily routine has been kept safe and unchanged. If you would like to shift your meal time earlier so that slot becomes digested and safe, "
+                "or choose another empty-stomach window, please let me know! 🙏"
+            )
+            db.save_chat_message(user_id, "assistant", insist_text)
+            return {
+                "response": insist_text,
+                "proposed_schedule": None,
+                "schedule_updated": False,
+                "timestamp": time.time()
+            }
+
         # Rejection handling: leave schedule untouched
         if is_rejection and last_assistant_msg:
             reject_text = (
@@ -645,6 +687,9 @@ def chat_assistant(request: ChatRequest, user_id: int = Depends(get_current_user
         from src.planning.tools import AVAILABLE_PLANNER_TOOLS, execute_planner_tool
 
         def bound_tool_executor(t_name: str, t_args: Dict[str, Any]) -> str:
+            # Never allow premature DB mutation on Turn 1 when user has not explicitly confirmed
+            if t_name == "persist_schedule_adaptation" and not is_acceptance:
+                t_name = "propose_schedule_adaptation"
             return execute_planner_tool(t_name, t_args, caller_user_id=str(user_id))
 
         t_pre = state.get("schedule_timestamp", 0)
@@ -664,7 +709,7 @@ def chat_assistant(request: ChatRequest, user_id: int = Depends(get_current_user
             best_alt = alts[0]["proposed_slot"] if alts else "18:30 - 18:45"
             best_alt_why = alts[0]["rationale"] if alts else "Practiced on an empty stomach before dinner."
             secondary_alt = f" Alternatively, **{alts[1]['proposed_slot']}** ({alts[1]['rationale']}) is also suitable." if len(alts) > 1 else ""
-            if not full_response or (best_alt not in full_response and "contraindicated" not in full_response.lower() and "empty stomach" not in full_response.lower()):
+            if not full_response or best_alt not in full_response:
                 full_response = (
                     f"Namaste. Looking at your current schedule, I cannot recommend scheduling **{precheck_eval['activity_name']}** "
                     f"at **{precheck_eval['proposed_slot']}**.\n\n"

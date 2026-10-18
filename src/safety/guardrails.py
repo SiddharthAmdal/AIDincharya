@@ -69,40 +69,54 @@ def _classify_practice_category(name: str, description: str = "") -> str:
     """
     Classifies any practice into one of the physiological Dinacharya categories
     for relational temporal reasoning.
+    Classifies strictly by `name` first so instructional phrases in `description`
+    (e.g., "Practice on an empty stomach before breakfast/meals") never misclassify
+    a non-meal practice as AHARA_MEAL.
     """
-    text = f"{name} {description}".lower()
-    if any(k in text for k in [
-        "meal", "lunch", "dinner", "breakfast", "mitahara", "bhojana",
-        "khichdi", "soup", "gruel", "peya", "food", "eat"
-    ]):
-        return "AHARA_MEAL"
-    if any(k in text for k in [
-        "pranayama", "nadi shodhana", "anuloma", "sheetali", "sitkari",
-        "bhastrika", "kapalabhati", "bhramari", "ujjayi", "breath", "breathing"
-    ]):
-        return "PRANAYAMA_YOGA"
-    if any(k in text for k in [
-        "vyayama", "surya namaskar", "sun salutation", "asana", "yoga",
-        "exercise", "workout", "hiit", "cardio", "gym", "running", "walk"
-    ]) and "yoga nidra" not in text:
-        return "VYAYAMA_EXERTION"
-    if any(k in text for k in [
-        "abhyanga", "udvartana", "oil massage", "body massage", "dry brushing", "head massage"
-    ]) and "padabhyanga" not in text and "foot" not in text:
-        return "ABHYANGA_OLEATION"
-    if any(k in text for k in ["snana", "bath", "shower"]):
-        return "SNANA_BATH"
-    if any(k in text for k in [
-        "trataka", "yoga nidra", "padabhyanga", "sadhana transition",
-        "sleep", "nidra", "reflection", "meditation", "dhyana", "restorative"
-    ]):
-        return "NIDRA_WIND_DOWN"
-    if any(k in text for k in [
-        "dantadhavana", "jihva", "gandusha", "kavala", "nasya", "anjana",
-        "brahma muhurta", "ushnodaka", "ushapana", "sauca"
-    ]):
-        return "MORNING_KRIYA"
-    return "GENERAL"
+    def _match_category(text: str, check_meals_first: bool = False) -> str:
+        t = text.lower()
+        if check_meals_first and any(k in t for k in [
+            "meal", "lunch", "dinner", "breakfast", "mitahara", "bhojana",
+            "khichdi", "soup", "gruel", "peya"
+        ]):
+            return "AHARA_MEAL"
+        if any(k in t for k in [
+            "pranayama", "nadi shodhana", "anuloma", "sheetali", "sitkari",
+            "bhastrika", "kapalabhati", "bhramari", "ujjayi", "breath", "breathing"
+        ]):
+            return "PRANAYAMA_YOGA"
+        if any(k in t for k in [
+            "vyayama", "surya namaskar", "sun salutation", "asana", "yoga",
+            "exercise", "workout", "hiit", "cardio", "gym", "running", "walk"
+        ]) and "yoga nidra" not in t:
+            return "VYAYAMA_EXERTION"
+        if any(k in t for k in [
+            "abhyanga", "udvartana", "oil massage", "body massage", "dry brushing", "head massage"
+        ]) and "padabhyanga" not in t and "foot" not in t:
+            return "ABHYANGA_OLEATION"
+        if any(k in t for k in ["snana", "bath", "shower"]):
+            return "SNANA_BATH"
+        if any(k in t for k in [
+            "trataka", "yoga nidra", "padabhyanga", "sadhana transition",
+            "sleep", "nidra", "reflection", "meditation", "dhyana", "restorative"
+        ]):
+            return "NIDRA_WIND_DOWN"
+        if any(k in t for k in [
+            "dantadhavana", "jihva", "jihwa", "gandusha", "kavala", "nasya", "anjana",
+            "brahma muhurta", "ushnodaka", "ushapana", "ushapan", "sauca"
+        ]):
+            return "MORNING_KRIYA"
+        if any(k in t for k in [
+            "meal", "lunch", "dinner", "breakfast", "mitahara", "bhojana",
+            "khichdi", "soup", "gruel", "peya", "food", "eat"
+        ]):
+            return "AHARA_MEAL"
+        return "GENERAL"
+
+    by_name = _match_category(name or "", check_meals_first=False)
+    if by_name != "GENERAL" or not description:
+        return by_name
+    return _match_category(description, check_meals_first=False)
 
 
 def _get_circadian_dosha_window(minute_of_day: int) -> str:
@@ -306,9 +320,9 @@ class ClinicalRuleEngine:
     def _enforce_post_meal_spacing_on_schedule(schedule: DinacharyaSchedule) -> List[Dict[str, Any]]:
         """
         Scans the schedule for practices in PRANAYAMA_YOGA, VYAYAMA_EXERTION, ABHYANGA_OLEATION,
-        or SNANA_BATH that are scheduled overlapping with or within <90 minutes after an AHARA_MEAL,
-        and shifts them to a safe pre-meal window (30 mins before the meal) so no schedule can persist
-        with a Bhuktavastu post-meal violation.
+        or SNANA_BATH that are scheduled overlapping with or within <90 minutes after a light meal
+        (or <180 minutes after a heavy midday meal), and shifts them to a conflict-free,
+        principle-compliant window so no schedule can persist with a Bhuktavastu post-meal violation.
         """
         overrides: List[Dict[str, Any]] = []
         all_blocks = [
@@ -342,22 +356,50 @@ class ClinicalRuleEngine:
                 dur = max(15, p_end - p_start)
 
                 for meal_name, m_start, m_end in meals:
-                    # Violation if practice starts during the meal or within <90 minutes after meal ends
+                    is_heavy = any(k in meal_name.lower() for k in ["heaviest", "lunch", "mitahara", "heavy"])
+                    min_gap = 180 if is_heavy else 90
                     gap_after_meal = p_start - m_end
                     overlaps_meal = max(p_start, m_start) < min(p_end, m_end)
-                    if overlaps_meal or (0 <= gap_after_meal < 90):
+                    if overlaps_meal or (0 <= gap_after_meal < min_gap):
                         old_slot = p.time_slot
-                        # Shift to finish 15 minutes before the meal starts
-                        new_end = max(300, m_start - 15)
-                        new_start = max(285, new_end - dur)
-                        new_slot = _format_minutes_to_slot(new_start, new_end)
+                        # Build existing_items excluding `p` so we pick a conflict-free slot
+                        other_items: List[Dict[str, Any]] = []
+                        for b_k, b_list in all_blocks:
+                            for other_p in b_list:
+                                if other_p is p:
+                                    continue
+                                op = _parse_slot_minutes(other_p.time_slot, other_p.duration_minutes)
+                                other_items.append({
+                                    "name": other_p.name,
+                                    "time_slot": other_p.time_slot,
+                                    "duration_minutes": other_p.duration_minutes,
+                                    "description": other_p.description,
+                                    "block": b_k,
+                                    "category": _classify_practice_category(other_p.name, other_p.description),
+                                    "start_min": op[0] if op else None,
+                                    "end_min": op[1] if op else None,
+                                })
+                        alts = ClinicalRuleEngine._compute_valid_alternatives(
+                            activity_name=p.name,
+                            target_cat=cat,
+                            duration_minutes=dur,
+                            requested_start_min=p_start,
+                            existing_items=other_items,
+                            calendar_events=[],
+                        )
+                        if alts:
+                            new_slot = alts[0]["proposed_slot"]
+                        else:
+                            new_end = max(300, m_start - 15)
+                            new_start = max(285, new_end - dur)
+                            new_slot = _format_minutes_to_slot(new_start, new_end)
                         p.time_slot = new_slot
                         rationale_note = (
                             f"[SAFETY OVERRIDE: Bhuktavastu / Post-Meal Guardrail] '{p.name}' cannot be practiced "
                             f"at {old_slot} immediately after '{meal_name}' ({_format_minutes_to_slot(m_start, m_end)}). "
                             f"Classical Ayurveda (Ashtanga Hrdayam Su. 2) and AYUSH Common Yoga Protocol mandate an empty "
                             f"stomach (at least 90-120 mins after a light meal or 3-4 hours after a heavy meal) to protect "
-                            f"Jatharagni and Samana Vayu. Shifted to {new_slot} (before meal)."
+                            f"Jatharagni and Samana Vayu. Shifted to {new_slot}."
                         )
                         if "[SAFETY OVERRIDE" not in (p.rationale or ""):
                             p.rationale = f"{p.rationale} {rationale_note}".strip()
@@ -418,6 +460,8 @@ class ClinicalRuleEngine:
 
         existing_items: List[Dict[str, Any]] = []
         matched_target_duration = 15
+        matched_target_block = ""
+        matched_target_desc = ""
         act_lower = (activity_name or "").strip().lower()
 
         for blk_key in ["morning_block", "midday_block", "evening_block"]:
@@ -434,6 +478,8 @@ class ClinicalRuleEngine:
                 )
                 if is_same_activity:
                     matched_target_duration = p_dur
+                    matched_target_block = blk_key
+                    matched_target_desc = p_desc
                     continue  # Exclude the practice's own old slot when checking conflicts
 
                 parsed = _parse_slot_minutes(p_slot, p_dur)
@@ -450,20 +496,21 @@ class ClinicalRuleEngine:
 
         existing_items.sort(key=lambda x: x["start_min"] if x["start_min"] is not None else 9999)
 
+        target_cat = _classify_practice_category(activity_name, matched_target_desc)
+
         # If change_type is "skip", no new time slot validation is required
         if change_type == "skip" or not proposed_slot:
             return {
                 "is_valid": True,
                 "activity_name": activity_name,
                 "proposed_slot": proposed_slot,
-                "category": _classify_practice_category(activity_name),
+                "category": target_cat,
                 "violated_principles": [],
                 "clinical_explanation": f"Skipping or pausing {activity_name} is permissible when needed.",
                 "retrieved_citations": [],
                 "recommended_alternatives": []
             }
 
-        target_cat = _classify_practice_category(activity_name)
         parsed_prop = _parse_slot_minutes(proposed_slot, matched_target_duration)
         if not parsed_prop:
             return {
@@ -479,6 +526,35 @@ class ClinicalRuleEngine:
 
         prop_start, prop_end = parsed_prop
         prop_duration = max(15, prop_end - prop_start)
+
+        # Contextual 12-hour bare-time disambiguation (e.g., user asks "Can I do pranayama at 7:30?" without "PM")
+        msg_lower = (user_message or "").lower()
+        slot_lower = (proposed_slot or "").lower()
+        has_explicit_am = bool(re.search(r"\b(am|morning|dawn|brahma)\b", f"{slot_lower} {msg_lower}"))
+        has_explicit_pm = bool(re.search(r"\b(pm|evening|night|tonight|dinner|supper)\b", f"{slot_lower} {msg_lower}"))
+        if 300 <= prop_start < 660 and not has_explicit_am:
+            pm_start = prop_start + 720
+            pm_end = prop_end + 720
+            # Check if pm_start falls overlapping with or within 90 mins after an evening meal (e.g. 19:00-19:30 Dinner)
+            hits_evening_meal = any(
+                it["category"] == "AHARA_MEAL"
+                and it["start_min"] is not None
+                and it["end_min"] is not None
+                and it["start_min"] >= 17 * 60
+                and (max(pm_start, it["start_min"]) < min(pm_end, it["end_min"]) or 0 <= (pm_start - it["end_min"]) < 90)
+                for it in existing_items
+            )
+            # Disambiguate bare 5:00-10:59 to 17:00-22:59 when:
+            # 1) user_message explicitly mentions evening/dinner/pm, OR
+            # 2) the activity itself is an evening_block practice (e.g. Dinner, Trataka) and a bare hour was given, OR
+            # 3) user_message contains a bare time (or the practice is already in morning_block) and the PM equivalent
+            #    directly hits the post-dinner window (e.g. "Can I do pranayama at 7:30?" right after 19:00-19:30 dinner)
+            is_bare_in_slot_or_msg = (not re.match(r"^0\d:", proposed_slot.strip())) or bool(user_message)
+            if has_explicit_pm or (matched_target_block == "evening_block" and is_bare_in_slot_or_msg) or (
+                hits_evening_meal and matched_target_block == "morning_block" and bool(user_message)
+            ):
+                prop_start, prop_end = pm_start, pm_end
+
         standardized_proposed_slot = _format_minutes_to_slot(prop_start, prop_end)
         circadian_window = _get_circadian_dosha_window(prop_start)
 
@@ -510,11 +586,11 @@ class ClinicalRuleEngine:
             if 0 <= gap_before_item <= 180:
                 adjacent_descriptions.append(f"{gap_before_item} mins before {item_label}")
 
-            # --- Matrix Rule A: Target is PRANAYAMA_YOGA, VYAYAMA_EXERTION, ABHYANGA_OLEATION, or SNANA_BATH ---
-            if target_cat in {"PRANAYAMA_YOGA", "VYAYAMA_EXERTION", "ABHYANGA_OLEATION", "SNANA_BATH"}:
+            # --- Matrix Rule A: Target is PRANAYAMA_YOGA, VYAYAMA_EXERTION, ABHYANGA_OLEATION, SNANA_BATH, or MORNING_KRIYA ---
+            if target_cat in {"PRANAYAMA_YOGA", "VYAYAMA_EXERTION", "ABHYANGA_OLEATION", "SNANA_BATH", "MORNING_KRIYA"}:
                 if item_cat == "AHARA_MEAL":
                     is_heavy_meal = any(k in item["name"].lower() for k in ["heaviest", "lunch", "mitahara", "heavy"])
-                    min_post_meal_gap = 180 if is_heavy_meal else 90
+                    min_post_meal_gap = 60 if target_cat == "MORNING_KRIYA" else (180 if is_heavy_meal else 90)
                     if 0 <= gap_after_item < min_post_meal_gap or (max(prop_start, st) < min(prop_end, en)):
                         if target_cat == "PRANAYAMA_YOGA":
                             violated_principles.append(
@@ -531,7 +607,7 @@ class ClinicalRuleEngine:
                                 f"Bhuktavastu Snana Contraindication (Ashtanga Hrdayam Sutrasthana 2.18): "
                                 f"Bathing ('{activity_name}') at {standardized_proposed_slot} is {max(0, gap_after_item)} minutes "
                                 f"after '{item_label}'. Taking a bath immediately after food (Bhuktavastu) is strictly contraindicated "
-                                f"as it diverts peripheral circulation away from the gastrointestinal tract and extinguishes Jatharagni ( causing Ajirna)."
+                                f"as it diverts peripheral circulation away from the gastrointestinal tract and extinguishes Jatharagni (causing Ajirna)."
                             )
                         elif target_cat == "ABHYANGA_OLEATION":
                             violated_principles.append(
@@ -545,6 +621,13 @@ class ClinicalRuleEngine:
                                 f"Physical exercise/Asana ('{activity_name}') at {standardized_proposed_slot} is {max(0, gap_after_item)} minutes "
                                 f"after '{item_label}'. Exercise immediately after a meal vitiates Doshas and impairs digestion; "
                                 f"wait at least {min_post_meal_gap} minutes or practice before the meal."
+                            )
+                        elif target_cat == "MORNING_KRIYA":
+                            violated_principles.append(
+                                f"Dinacharya Kriya Contraindication (Ashtanga Hrdayam Sutrasthana 2): "
+                                f"Cleansing practice ('{activity_name}') at {standardized_proposed_slot} is {max(0, gap_after_item)} minutes "
+                                f"after '{item_label}'. Nasya, Gandusha, and morning purification kriyas must be performed on an empty stomach, "
+                                f"never immediately after food."
                             )
 
                     # Pre-meal buffer: AYUSH CYP states food may be consumed 15-30 mins after yoga/pranayama
@@ -765,12 +848,18 @@ Return strict JSON with keys:
         """
         Scans the user's timeline to recommend 2-3 conflict-free, principle-compliant time slots
         closest to the user's requested time window (e.g. evening vs morning).
+        Enforces all Matrix Rules (A-E) so every recommended alternative is guaranteed valid.
         """
         from src.planning.tools import check_calendar_conflicts
 
         dur = max(15, min(60, duration_minutes))
         meals = [it for it in existing_items if it["category"] == "AHARA_MEAL" and it["start_min"] is not None]
-        occupied = [(it["start_min"], it["end_min"], it["name"], it["category"]) for it in existing_items if it["start_min"] is not None and it["end_min"] is not None]
+        occupied = [
+            (it["start_min"], it["end_min"], it["name"], it["category"], it.get("time_slot", ""))
+            for it in existing_items
+            if it["start_min"] is not None and it["end_min"] is not None
+        ]
+        act_text_lower = (activity_name or "").lower()
 
         def _is_candidate_valid(cand_start: int) -> Tuple[bool, str]:
             cand_end = cand_start + dur
@@ -779,36 +868,70 @@ Return strict JSON with keys:
             slot_str = _format_minutes_to_slot(cand_start, cand_end)
             if calendar_events and check_calendar_conflicts(calendar_events, slot_str):
                 return False, ""
-            # Check overlaps with any existing practice (with 5-min buffer)
-            for st, en, _, _ in occupied:
-                if max(cand_start, st) < min(cand_end, en):
-                    return False, ""
 
             rationale_parts = []
-            if target_cat in {"PRANAYAMA_YOGA", "VYAYAMA_EXERTION", "ABHYANGA_OLEATION", "SNANA_BATH"}:
-                for m in meals:
-                    m_st, m_en = m["start_min"], m["end_min"]
-                    is_heavy = any(k in m["name"].lower() for k in ["heaviest", "lunch", "mitahara", "heavy"])
-                    min_gap = 180 if is_heavy else 90
-                    # Cannot be during meal or within min_gap after meal
-                    if max(cand_start, m_st) < min(cand_end, m_en):
-                        return False, ""
-                    if 0 <= (cand_start - m_en) < min_gap:
-                        return False, ""
-                    # If before meal, must finish at least 15 mins before meal starts
-                    if 0 <= (m_st - cand_end) < 15 and target_cat in {"PRANAYAMA_YOGA", "VYAYAMA_EXERTION"}:
-                        return False, ""
-                    if 15 <= (m_st - cand_end) <= 60:
-                        rationale_parts.append(
-                            f"Practiced on an empty stomach {m_st - cand_end} mins before '{m['name']}' ({m['time_slot']}), "
-                            f"satisfying the AYUSH 15-30 min pre-meal guideline without disturbing Jatharagni"
-                        )
-                    elif (cand_start - m_en) >= min_gap and (cand_start - m_en) <= 210:
-                        rationale_parts.append(
-                            f"Maintains a safe {(cand_start - m_en)}-minute post-meal digestion gap after '{m['name']}' ({m['time_slot']})"
-                        )
+            for st, en, it_name, it_cat, it_slot in occupied:
+                # Direct overlap check
+                if max(cand_start, st) < min(cand_end, en):
+                    return False, ""
+                gap_after_item = cand_start - en
+                gap_before_item = st - cand_end
 
+                # Matrix Rule A: Post-meal & pre-meal spacing for yoga/exertion/oleation/bath/kriya
+                if target_cat in {"PRANAYAMA_YOGA", "VYAYAMA_EXERTION", "ABHYANGA_OLEATION", "SNANA_BATH", "MORNING_KRIYA"}:
+                    if it_cat == "AHARA_MEAL":
+                        is_heavy = any(k in it_name.lower() for k in ["heaviest", "lunch", "mitahara", "heavy"])
+                        min_gap = 60 if target_cat == "MORNING_KRIYA" else (180 if is_heavy else 90)
+                        if 0 <= gap_after_item < min_gap:
+                            return False, ""
+                        if 0 <= gap_before_item < 15 and target_cat in {"PRANAYAMA_YOGA", "VYAYAMA_EXERTION"}:
+                            return False, ""
+                        if 15 <= gap_before_item <= 60:
+                            rationale_parts.append(
+                                f"Practiced on an empty stomach {gap_before_item} mins before '{it_name}' ({it_slot}), "
+                                f"satisfying the AYUSH 15-30 min pre-meal guideline without disturbing Jatharagni"
+                            )
+                        elif min_gap <= gap_after_item <= 210:
+                            rationale_parts.append(
+                                f"Maintains a safe {gap_after_item}-minute post-meal digestion gap after '{it_name}' ({it_slot})"
+                            )
+
+                # Matrix Rule B: Target is AHARA_MEAL
+                if target_cat == "AHARA_MEAL":
+                    if it_cat in {"PRANAYAMA_YOGA", "VYAYAMA_EXERTION", "ABHYANGA_OLEATION", "SNANA_BATH"}:
+                        if 0 <= gap_before_item < 90:
+                            return False, ""
+                        if it_cat in {"PRANAYAMA_YOGA", "VYAYAMA_EXERTION"} and 0 <= gap_after_item < 15:
+                            return False, ""
+                    elif it_cat == "AHARA_MEAL":
+                        if abs(cand_start - st) < 180:
+                            return False, ""
+                    elif it_cat == "NIDRA_WIND_DOWN" and "sleep" in it_name.lower():
+                        if 0 <= gap_before_item < 90:
+                            return False, ""
+
+                # Matrix Rule C: Kriya Krama Ordering (Abhyanga before Snana, post-practice bath cooldown)
+                if target_cat == "ABHYANGA_OLEATION" and it_cat == "SNANA_BATH":
+                    if 0 <= gap_after_item <= 120:
+                        return False, ""
+                    if 0 <= gap_before_item <= 45:
+                        rationale_parts.append(f"Scheduled {gap_before_item} mins before '{it_name}' ({it_slot}) following traditional Abhyanga-before-Snana Kriya Krama")
+                if target_cat == "SNANA_BATH" and it_cat == "ABHYANGA_OLEATION":
+                    if 0 <= gap_before_item <= 120:
+                        return False, ""
+                    if 10 <= gap_after_item <= 60:
+                        rationale_parts.append(f"Scheduled {gap_after_item} mins after '{it_name}' ({it_slot}) allowing warm oil absorption before bath")
+                if target_cat == "SNANA_BATH" and it_cat in {"VYAYAMA_EXERTION", "PRANAYAMA_YOGA"}:
+                    if 0 <= gap_after_item < 20:
+                        return False, ""
+
+            # Matrix Rule D: Circadian / Time-of-Day cutoffs
             if target_cat == "VYAYAMA_EXERTION" and cand_start >= 20 * 60:
+                return False, ""
+            if target_cat == "PRANAYAMA_YOGA" and cand_start >= 19 * 60:
+                if any(h in act_text_lower for h in ["bhastrika", "kapalabhati", "surya bheda"]):
+                    return False, ""
+            if target_cat == "AHARA_MEAL" and cand_start >= 21 * 60 + 30:
                 return False, ""
 
             if not rationale_parts:
@@ -824,19 +947,26 @@ Return strict JSON with keys:
         candidates: List[Dict[str, str]] = []
         seen_slots = set()
 
-        # Priority 1: Check strategic slots relative to meals (30m before dinner, 90-120m after light dinner, morning 06:30/07:00)
+        # Priority 1: Check strategic slots relative to meals and Kriya Krama anchors
         strategic_starts: List[int] = []
         for m in meals:
             m_st, m_en = m["start_min"], m["end_min"]
-            # 30 mins before meal starts (finishes 15-30 mins before meal)
             strategic_starts.append(m_st - dur - 15)
             strategic_starts.append(m_st - dur - 30)
-            # 90 mins and 120 mins after meal ends
             strategic_starts.append(m_en + 90)
             strategic_starts.append(m_en + 120)
+            strategic_starts.append(m_en + 180)
 
-        # Also add morning empty-stomach slots
-        strategic_starts.extend([6 * 60 + 30, 7 * 60, 7 * 60 + 15, 18 * 60 + 15, 18 * 60 + 30, 21 * 60])
+        for st, en, _, it_cat, _ in occupied:
+            if target_cat == "ABHYANGA_OLEATION" and it_cat == "SNANA_BATH":
+                strategic_starts.append(st - dur - 10)
+                strategic_starts.append(st - dur - 15)
+            elif target_cat == "SNANA_BATH" and it_cat == "ABHYANGA_OLEATION":
+                strategic_starts.append(en + 10)
+                strategic_starts.append(en + 20)
+
+        # Also add morning & evening empty-stomach anchor slots
+        strategic_starts.extend([6 * 60 + 30, 6 * 60 + 45, 7 * 60, 7 * 60 + 15, 18 * 60 + 15, 18 * 60 + 30, 21 * 60])
 
         # Sort strategic starts by proximity to the user's requested time so evening requests get evening alternatives first
         strategic_starts.sort(key=lambda s: abs(s - requested_start_min))
@@ -850,6 +980,20 @@ Return strict JSON with keys:
                     candidates.append({"proposed_slot": slot_fmt, "slot": slot_fmt, "rationale": why})
                 if len(candidates) >= 3:
                     break
+
+        # Priority 2: 15-minute grid scan fallback if fewer than 3 valid alternatives were found
+        if len(candidates) < 3:
+            grid_starts = list(range(5 * 60 + 30, 21 * 60 + 30, 15))
+            grid_starts.sort(key=lambda s: abs(s - requested_start_min))
+            for st_min in grid_starts:
+                ok, why = _is_candidate_valid(st_min)
+                if ok:
+                    slot_fmt = _format_minutes_to_slot(st_min, st_min + dur)
+                    if slot_fmt not in seen_slots:
+                        seen_slots.add(slot_fmt)
+                        candidates.append({"proposed_slot": slot_fmt, "slot": slot_fmt, "rationale": why})
+                    if len(candidates) >= 3:
+                        break
 
         return candidates
 
