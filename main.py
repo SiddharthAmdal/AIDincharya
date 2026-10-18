@@ -568,7 +568,6 @@ def chat_assistant(request: ChatRequest, user_id: int = Depends(get_current_user
 
         # Priority -1: Query Safety & Clinical Emergency Gate
         t_guard_start = time.perf_counter()
-        from src.safety.guardrails import ClinicalRuleEngine
         safety_verdict = ClinicalRuleEngine.evaluate_query_safety(request.message)
         t_guard = time.perf_counter() - t_guard_start
         if not safety_verdict["is_safe"]:
