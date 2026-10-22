@@ -1,5 +1,5 @@
 import time
-from typing import Dict, Optional
+from typing import Dict, Optional, Any
 from src.models import DoshaVector, VikritiFlags, DoshaProfile
 
 
@@ -10,37 +10,96 @@ class DoshaMapper:
     into computable Ayurvedic Prakriti and Vikriti vectors.
     """
 
-    @staticmethod
-    def classify_prakriti(responses: Optional[Dict[str, str]] = None) -> DoshaVector:
+    RUBRIC_VERSION = "v1.2-rubric"
+
+    RUBRIC_KEYWORDS = {
+        "vata": [
+            "vata", "dry", "light", "fast", "cold", "irregular", "variable", 
+            "anxiety", "lean", "thin", "restless", "insomnia", "gas", "bloat"
+        ],
+        "pitta": [
+            "pitta", "hot", "sharp", "acid", "sweat", "intense", "irritable", 
+            "medium", "athletic", "warm", "hunger", "heartburn", "sunburn"
+        ],
+        "kapha": [
+            "kapha", "heavy", "slow", "sleepy", "stable", "calm", "broad", 
+            "solid", "sturdy", "lethargic", "mucus", "steady", "weight"
+        ]
+    }
+
+    @classmethod
+    def classify_prakriti(cls, responses: Optional[Dict[str, str]] = None) -> DoshaVector:
         """
-        Translates a 24-item bilingual questionnaire into a baseline Prakriti vector.
-        If responses are missing or empty, returns a balanced Vata-Pitta dominant default.
+        Translates questionnaire responses into a normalized Prakriti vector using
+        a deterministic clinical rubric across physiological and behavioral dimensions.
         """
         if not responses:
-            # Default balanced constitution: Vata-dominant Pitta (e.g., [V: 0.50, P: 0.30, K: 0.20])
             return DoshaVector(vata=0.50, pitta=0.30, kapha=0.20)
 
-        # Simple rule-based scorer for the stub
-        # We look for keywords in the mock questionnaire responses to derive V, P, K scores
         v_score, p_score, k_score = 0.0, 0.0, 0.0
-        for val in responses.values():
-            val_lower = val.lower()
-            if "vata" in val_lower or "dry" in val_lower or "light" in val_lower or "fast" in val_lower or "cold" in val_lower:
+
+        for key, val in responses.items():
+            if not val or not isinstance(val, str):
+                continue
+            val_clean = val.strip().lower()
+
+            # Direct categorical selection
+            if val_clean in ("vata", "v"):
                 v_score += 1.0
-            if "pitta" in val_lower or "hot" in val_lower or "sharp" in val_lower or "acid" in val_lower or "sweat" in val_lower:
+            elif val_clean in ("pitta", "p"):
                 p_score += 1.0
-            if "kapha" in val_lower or "heavy" in val_lower or "slow" in val_lower or "sleepy" in val_lower or "stable" in val_lower:
+            elif val_clean in ("kapha", "k"):
                 k_score += 1.0
+            else:
+                # Text rubric token matching
+                v_hits = sum(1 for kw in cls.RUBRIC_KEYWORDS["vata"] if kw in val_clean)
+                p_hits = sum(1 for kw in cls.RUBRIC_KEYWORDS["pitta"] if kw in val_clean)
+                k_hits = sum(1 for kw in cls.RUBRIC_KEYWORDS["kapha"] if kw in val_clean)
+                
+                # Weight contribution proportionally if mixed text
+                tot_hits = v_hits + p_hits + k_hits
+                if tot_hits > 0:
+                    v_score += v_hits / tot_hits
+                    p_score += p_hits / tot_hits
+                    k_score += k_hits / tot_hits
 
         total = v_score + p_score + k_score
         if total == 0:
             return DoshaVector(vata=0.50, pitta=0.30, kapha=0.20)
 
-        return DoshaVector(
-            vata=round(v_score / total, 3),
-            pitta=round(p_score / total, 3),
-            kapha=round(k_score / total, 3)
-        )
+        # Normalization with deterministic rounding
+        norm_v = round(v_score / total, 3)
+        norm_p = round(p_score / total, 3)
+        norm_k = round(k_score / total, 3)
+
+        return DoshaVector(vata=norm_v, pitta=norm_p, kapha=norm_k)
+
+    @classmethod
+    def explain_prakriti_classification(cls, responses: Optional[Dict[str, str]] = None) -> Dict[str, Any]:
+        """
+        Provides a transparent, explainable audit of the rubric evaluation.
+        """
+        vector = cls.classify_prakriti(responses)
+        scores = {"vata": vector.vata, "pitta": vector.pitta, "kapha": vector.kapha}
+        sorted_doshas = sorted(scores.items(), key=lambda x: x[1], reverse=True)
+        primary, primary_score = sorted_doshas[0]
+        secondary, secondary_score = sorted_doshas[1]
+
+        if primary_score >= 0.60:
+            dominant_type = f"Pure {primary.capitalize()}"
+        elif (primary_score - secondary_score) <= 0.15:
+            dominant_type = f"Dual {primary.capitalize()}-{secondary.capitalize()}"
+        else:
+            dominant_type = f"{primary.capitalize()}-dominant"
+
+        return {
+            "rubric_version": cls.RUBRIC_VERSION,
+            "dosha_vector": vector.model_dump(),
+            "constitution_type": dominant_type,
+            "primary_dosha": primary.capitalize(),
+            "secondary_dosha": secondary.capitalize(),
+            "explanation": f"Based on {len(responses or {})} assessment responses, your baseline constitution is {dominant_type} ({primary.capitalize()} {int(primary_score*100)}%, {secondary.capitalize()} {int(secondary_score*100)}%)."
+        }
 
     @staticmethod
     def detect_vikriti(

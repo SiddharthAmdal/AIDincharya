@@ -1,6 +1,9 @@
 import sys
 import os
 
+if hasattr(sys.stdout, "reconfigure"):
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+
 # Add project root to sys.path
 sys.path.append(os.getcwd())
 
@@ -45,17 +48,21 @@ def diagnostic():
     
     print("\n2. Generating Schedule...")
     try:
-        schedule = agent.generate(
+        gen_result = agent.generate(
             user_id="diag_user",
             profile=profile,
             context=context,
             adherence_score=1.0,
             complexity="Moderate"
         )
+        schedule = gen_result.get("schedule") if isinstance(gen_result, dict) else gen_result
         print("SUCCESS: Schedule generated.")
         print("\n--- Morning Block ---")
-        for p in schedule.morning_block:
-            print(f"- {p.name}: {p.rationale}")
+        morning_items = schedule.morning_block if hasattr(schedule, "morning_block") else schedule.get("morning_block", [])
+        for p in morning_items:
+            name = p.name if hasattr(p, "name") else p.get("name", "Unknown")
+            rationale = p.rationale if hasattr(p, "rationale") else p.get("rationale", "")
+            print(f"- {name}: {rationale}")
     except Exception as e:
         print(f"FAILED: Agent generation failed: {e}")
 

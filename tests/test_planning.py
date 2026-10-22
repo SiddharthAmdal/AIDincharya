@@ -1,4 +1,5 @@
 import time
+import pytest
 from fastapi.testclient import TestClient
 from main import app, get_current_user
 from src.models import DoshaProfile, DoshaVector, UserContext
@@ -11,7 +12,9 @@ client = TestClient(app)
 def mocked_get_current_user():
     return 1 # Return a default user ID
 
-app.dependency_overrides[get_current_user] = mocked_get_current_user
+@pytest.fixture(autouse=True)
+def ensure_auth():
+    app.dependency_overrides[get_current_user] = mocked_get_current_user
 
 
 def test_calendar_conflicts_tool():

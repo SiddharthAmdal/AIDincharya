@@ -29,32 +29,472 @@ document.head.appendChild(style);
 // --- Auth & API ---
 function getToken() { return localStorage.getItem('dinacharya_token'); }
 function setToken(t) { localStorage.setItem('dinacharya_token', t); }
-function logout() { 
+async function logout() { 
+    try {
+        const token = getToken();
+        if (token) {
+            await fetch('/api/auth/logout', {
+                method: 'POST',
+                headers: { 'Authorization': `Bearer ${token}` }
+            });
+        }
+    } catch(e) { console.warn("Logout error:", e); }
     localStorage.removeItem('dinacharya_token'); 
-    sessionStorage.removeItem('schedule_cache'); 
+    sessionStorage.clear(); 
     window.location.href = '/'; 
 }
 
-async function authenticatedFetch(url, options = {}) {
+// --- Notifications Inbox & UI ---
+async function initNotifications() {
+    const notifBtn = document.getElementById('nav-notifications-btn') || document.querySelector('button[aria-label="Notifications"]');
+    if (!notifBtn) return;
+
+    // Create badge if not present
+    let badge = document.getElementById('nav-notification-badge');
+    if (!badge) {
+        badge = document.createElement('span');
+        badge.id = 'nav-notification-badge';
+        badge.className = 'hidden absolute -top-1 -right-1 bg-red-600 text-white text-[10px] font-bold w-4 h-4 rounded-full flex items-center justify-center';
+        notifBtn.classList.add('relative');
+        notifBtn.appendChild(badge);
+    }
+
+    // Modal / Dropdown container
+    let dropdown = document.getElementById('notifications-dropdown');
+    if (!dropdown) {
+        dropdown = document.createElement('div');
+        dropdown.id = 'notifications-dropdown';
+        dropdown.className = 'hidden fixed top-20 right-8 md:right-16 w-80 md:w-96 bg-white rounded-2xl shadow-2xl border border-gray-100 z-[120] overflow-hidden message-entrance';
+        dropdown.innerHTML = `
+            <div class="p-4 border-b border-gray-100 flex justify-between items-center bg-gray-50/50">
+                <div class="flex items-center gap-2">
+                    <span class="material-symbols-outlined text-primary text-xl">notifications</span>
+                    <h3 class="font-bold text-gray-800 text-sm">Notifications</h3>
+                </div>
+                <button id="close-notif-dropdown" class="text-gray-400 hover:text-gray-600 text-sm font-semibold">✕</button>
+            </div>
+            <div id="notifications-list" class="max-h-80 overflow-y-auto divide-y divide-gray-50 p-2">
+                <div class="p-6 text-center text-gray-400 text-sm">Loading notifications...</div>
+            </div>
+            <div class="px-4 py-3 bg-gray-50 border-t border-gray-100 flex items-center justify-between text-xs">
+                <div class="flex items-center gap-1.5">
+                    <span class="material-symbols-outlined text-sm text-primary">circle_notifications</span>
+                    <span class="text-gray-700 font-semibold">Browser Push</span>
+                    <span id="notif-dropdown-push-badge" class="text-[10px] px-2 py-0.5 rounded font-bold bg-gray-200 text-gray-600">Off</span>
+                </div>
+                <button id="notif-dropdown-push-toggle" class="text-primary hover:underline font-bold text-[11px]">Enable</button>
+            </div>
+        `;
+        document.body.appendChild(dropdown);
+
+        document.getElementById('close-notif-dropdown').onclick = () => {
+            dropdown.classList.add('hidden');
+        };
+
+        const dropBtn = document.getElementById('notif-dropdown-push-toggle');
+        if (dropBtn) {
+            dropBtn.onclick = (e) => {
+                e.stopPropagation();
+                toggleWebPush();
+            };
+        }
+
+        // Close on outside click
+        document.addEventListener('click', (e) => {
+            if (!dropdown.contains(e.target) && !notifBtn.contains(e.target)) {
+                dropdown.classList.add('hidden');
+            }
+        });
+    }
+
+    // Function to load and render notifications
+    async function loadNotifications() {
+        const res = await authenticatedFetch(`${API_BASE}/notifications?limit=15`);
+        if (!res || !res.ok) return;
+        const data = await res.json();
+        const notifs = data.notifications || [];
+        const unreadCount = data.unread_count || notifs.filter(n => !n.is_read).length;
+
+        if (unreadCount > 0) {
+            badge.innerText = unreadCount > 9 ? '9+' : unreadCount;
+            badge.classList.remove('hidden');
+        } else {
+            badge.classList.add('hidden');
+        }
+
+        const listContainer = document.getElementById('notifications-list');
+        if (!listContainer) return;
+
+        if (notifs.length === 0) {
+            listContainer.innerHTML = `
+                <div class="p-8 text-center text-gray-400 text-sm">
+                    <span class="material-symbols-outlined text-3xl mb-2 text-gray-300 block">notifications_off</span>
+                    No notifications yet.
+                </div>
+            `;
+            return;
+        }
+
+        listContainer.innerHTML = notifs.map(n => `
+            <div class="p-3.5 rounded-xl transition-colors ${n.is_read ? 'opacity-70 bg-white' : 'bg-primary/5'} hover:bg-gray-50 flex items-start justify-between gap-3 my-1">
+                <div class="flex-1">
+                    <div class="flex items-center gap-1.5 mb-1">
+                        <span class="text-xs font-bold uppercase tracking-wider ${n.severity === 'warning' ? 'text-amber-600' : 'text-primary'}">${n.event_type.replace('_', ' ')}</span>
+                        ${!n.is_read ? '<span class="w-1.5 h-1.5 bg-primary rounded-full"></span>' : ''}
+                    </div>
+                    <p class="text-xs text-gray-700 leading-relaxed">${n.message}</p>
+                    <span class="text-[10px] text-gray-400 mt-1 block">${n.created_at || 'Just now'}</span>
+                </div>
+                ${!n.is_read ? `
+                    <button data-notif-id="${n.id}" class="mark-read-btn text-[11px] font-semibold text-primary hover:underline self-center shrink-0">
+                        Mark read
+                    </button>
+                ` : ''}
+            </div>
+        `).join('');
+
+        // Wire mark as read buttons
+        listContainer.querySelectorAll('.mark-read-btn').forEach(btn => {
+            btn.onclick = async (e) => {
+                e.stopPropagation();
+                const nid = btn.getAttribute('data-notif-id');
+                const mRes = await authenticatedFetch(`${API_BASE}/notifications/${nid}/read`, { method: 'POST' });
+                if (mRes && mRes.ok) {
+                    loadNotifications();
+                }
+            };
+        });
+    }
+
+    // Toggle dropdown
+    notifBtn.onclick = (e) => {
+        e.stopPropagation();
+        dropdown.classList.toggle('hidden');
+        if (!dropdown.classList.contains('hidden')) {
+            loadNotifications();
+            renderWebPushControls();
+        }
+    };
+
+    // Initial badge check
+    loadNotifications();
+}
+
+// --- Web Push Notifications Subsystem ---
+function urlBase64ToUint8Array(base64String) {
+    const padding = '='.repeat((4 - (base64String.length % 4)) % 4);
+    const base64 = (base64String + padding)
+        .replace(/-/g, '+')
+        .replace(/_/g, '/');
+    const rawData = window.atob(base64);
+    const outputArray = new Uint8Array(rawData.length);
+    for (let i = 0; i < rawData.length; ++i) {
+        outputArray[i] = rawData.charCodeAt(i);
+    }
+    return outputArray;
+}
+
+let webPushState = {
+    supported: false,
+    permission: 'default',
+    subscribed: false,
+    loading: false,
+    swRegistration: null
+};
+
+function renderWebPushControls() {
+    const dashBadge = document.getElementById('dashboard-push-badge');
+    const dashBtn = document.getElementById('dashboard-push-toggle-btn');
+    const dropBadge = document.getElementById('notif-dropdown-push-badge');
+    const dropBtn = document.getElementById('notif-dropdown-push-toggle');
+
+    if (!webPushState.supported) {
+        if (dashBadge) {
+            dashBadge.className = 'px-2.5 py-0.5 rounded-full text-[11px] font-bold bg-gray-100 text-gray-500';
+            dashBadge.innerText = 'Not Supported';
+        }
+        if (dashBtn) {
+            dashBtn.disabled = true;
+            dashBtn.className = 'w-full py-2.5 px-4 rounded-xl font-label-md text-xs font-bold bg-gray-100 text-gray-400 cursor-not-allowed';
+            dashBtn.innerText = 'Browser Not Supported';
+        }
+        if (dropBadge) {
+            dropBadge.className = 'text-[10px] px-1.5 py-0.5 rounded font-semibold bg-gray-100 text-gray-400';
+            dropBadge.innerText = 'Unsupported';
+        }
+        if (dropBtn) {
+            dropBtn.disabled = true;
+            dropBtn.className = 'text-gray-400 font-bold text-[11px] cursor-not-allowed';
+            dropBtn.innerText = 'Unavailable';
+        }
+        return;
+    }
+
+    if (webPushState.permission === 'denied') {
+        if (dashBadge) {
+            dashBadge.className = 'px-2.5 py-0.5 rounded-full text-[11px] font-bold bg-red-100 text-red-700';
+            dashBadge.innerText = 'Blocked';
+        }
+        if (dashBtn) {
+            dashBtn.disabled = true;
+            dashBtn.className = 'w-full py-2.5 px-4 rounded-xl font-label-md text-xs font-bold bg-gray-100 text-gray-500 cursor-not-allowed';
+            dashBtn.innerText = 'Notifications Blocked in Settings';
+        }
+        if (dropBadge) {
+            dropBadge.className = 'text-[10px] px-1.5 py-0.5 rounded font-semibold bg-red-100 text-red-600';
+            dropBadge.innerText = 'Blocked';
+        }
+        if (dropBtn) {
+            dropBtn.disabled = true;
+            dropBtn.className = 'text-gray-400 font-bold text-[11px] cursor-not-allowed';
+            dropBtn.innerText = 'Blocked';
+        }
+        return;
+    }
+
+    if (webPushState.subscribed) {
+        if (dashBadge) {
+            dashBadge.className = 'px-2.5 py-0.5 rounded-full text-[11px] font-bold bg-emerald-100 text-emerald-800';
+            dashBadge.innerText = 'Active';
+        }
+        if (dashBtn) {
+            dashBtn.disabled = webPushState.loading;
+            dashBtn.className = 'w-full py-2.5 px-4 rounded-xl font-label-md text-xs font-bold transition-all border border-gray-200 text-gray-700 hover:bg-gray-100';
+            dashBtn.innerText = webPushState.loading ? 'Updating...' : 'Disable Browser Notifications';
+        }
+        if (dropBadge) {
+            dropBadge.className = 'text-[10px] px-1.5 py-0.5 rounded font-semibold bg-emerald-100 text-emerald-700';
+            dropBadge.innerText = 'Active';
+        }
+        if (dropBtn) {
+            dropBtn.disabled = webPushState.loading;
+            dropBtn.className = 'text-gray-600 hover:text-red-600 font-bold text-[11px]';
+            dropBtn.innerText = webPushState.loading ? '...' : 'Disable';
+        }
+    } else {
+        if (dashBadge) {
+            dashBadge.className = 'px-2.5 py-0.5 rounded-full text-[11px] font-bold bg-gray-100 text-gray-600';
+            dashBadge.innerText = 'Off';
+        }
+        if (dashBtn) {
+            dashBtn.disabled = webPushState.loading;
+            dashBtn.className = 'w-full py-2.5 px-4 rounded-xl font-label-md text-xs font-bold transition-all bg-primary/10 text-primary hover:bg-primary hover:text-white';
+            dashBtn.innerText = webPushState.loading ? 'Enabling...' : 'Enable Browser Notifications';
+        }
+        if (dropBadge) {
+            dropBadge.className = 'text-[10px] px-1.5 py-0.5 rounded font-semibold bg-gray-100 text-gray-600';
+            dropBadge.innerText = 'Off';
+        }
+        if (dropBtn) {
+            dropBtn.disabled = webPushState.loading;
+            dropBtn.className = 'text-primary hover:underline font-bold text-[11px]';
+            dropBtn.innerText = webPushState.loading ? '...' : 'Enable';
+        }
+    }
+}
+
+async function checkWebPushStatus() {
+    if (!('serviceWorker' in navigator) || !('PushManager' in window) || !('Notification' in window)) {
+        webPushState.supported = false;
+        renderWebPushControls();
+        return;
+    }
+    webPushState.supported = true;
+    webPushState.permission = Notification.permission;
+
+    try {
+        const reg = await navigator.serviceWorker.getRegistration('/sw.js');
+        webPushState.swRegistration = reg;
+        if (reg) {
+            const sub = await reg.pushManager.getSubscription();
+            webPushState.subscribed = !!sub;
+        } else {
+            webPushState.subscribed = false;
+        }
+    } catch (e) {
+        console.warn("Could not check local PushManager subscription:", e);
+    }
+    renderWebPushControls();
+}
+
+async function toggleWebPush() {
+    if (webPushState.loading) return;
+    if (!webPushState.supported) {
+        showToast("Web Push is not supported in this browser.");
+        return;
+    }
+
+    if (webPushState.subscribed) {
+        // Unsubscribe
+        webPushState.loading = true;
+        renderWebPushControls();
+        try {
+            if (webPushState.swRegistration) {
+                const sub = await webPushState.swRegistration.pushManager.getSubscription();
+                if (sub) {
+                    await sub.unsubscribe();
+                    await authenticatedFetch(`${API_BASE}/notifications/push/unsubscribe`, {
+                        method: 'POST',
+                        body: JSON.stringify({ endpoint: sub.endpoint })
+                    });
+                }
+            }
+            webPushState.subscribed = false;
+            showToast("✓ Browser notifications disabled.");
+        } catch (e) {
+            console.error("Unsubscribe error:", e);
+            showToast("Failed to disable notifications.");
+        } finally {
+            webPushState.loading = false;
+            renderWebPushControls();
+        }
+    } else {
+        // Subscribe
+        webPushState.loading = true;
+        renderWebPushControls();
+        try {
+            // Request permission explicitly only on click
+            const perm = await Notification.requestPermission();
+            webPushState.permission = perm;
+            if (perm !== 'granted') {
+                showToast("Notification permission was not granted.");
+                webPushState.loading = false;
+                renderWebPushControls();
+                return;
+            }
+
+            // Fetch public VAPID key
+            const keyRes = await authenticatedFetch(`${API_BASE}/notifications/push/vapid-public-key`);
+            if (!keyRes || !keyRes.ok) {
+                showToast("Push notification server is currently unavailable.");
+                webPushState.loading = false;
+                renderWebPushControls();
+                return;
+            }
+            const keyData = await keyRes.json();
+            if (!keyData.configured || !keyData.public_key) {
+                showToast("Push notifications are not configured on this server.");
+                webPushState.loading = false;
+                renderWebPushControls();
+                return;
+            }
+
+            // Register service worker if needed
+            let reg = webPushState.swRegistration;
+            if (!reg) {
+                reg = await navigator.serviceWorker.register('/sw.js', { scope: '/' });
+                webPushState.swRegistration = reg;
+            }
+            await navigator.serviceWorker.ready;
+
+            // Subscribe via PushManager
+            const convertedKey = urlBase64ToUint8Array(keyData.public_key);
+            const subscription = await reg.pushManager.subscribe({
+                userVisibleOnly: true,
+                applicationServerKey: convertedKey
+            });
+
+            const subJson = subscription.toJSON();
+            const rawP256dh = subscription.getKey ? subscription.getKey('p256dh') : null;
+            const rawAuth = subscription.getKey ? subscription.getKey('auth') : null;
+            const p256dhStr = subJson.keys?.p256dh || (rawP256dh ? btoa(String.fromCharCode.apply(null, new Uint8Array(rawP256dh))) : '');
+            const authStr = subJson.keys?.auth || (rawAuth ? btoa(String.fromCharCode.apply(null, new Uint8Array(rawAuth))) : '');
+
+            const regRes = await authenticatedFetch(`${API_BASE}/notifications/push/subscribe`, {
+                method: 'POST',
+                body: JSON.stringify({
+                    endpoint: subscription.endpoint,
+                    keys: {
+                        p256dh: p256dhStr,
+                        auth: authStr
+                    },
+                    p256dh: p256dhStr,
+                    auth: authStr,
+                    user_agent: navigator.userAgent
+                })
+            });
+
+            if (regRes && regRes.ok) {
+                webPushState.subscribed = true;
+                showToast("✓ Browser push notifications enabled!");
+            } else {
+                showToast("Failed to register subscription with server.");
+                await subscription.unsubscribe();
+            }
+        } catch (e) {
+            console.error("Push subscribe error:", e);
+            showToast("Failed to enable notifications: " + (e.message || "Unknown error"));
+        } finally {
+            webPushState.loading = false;
+            renderWebPushControls();
+        }
+    }
+}
+
+function initWebPush() {
+    const dashBtn = document.getElementById('dashboard-push-toggle-btn');
+    if (dashBtn) {
+        dashBtn.onclick = (e) => {
+            e.preventDefault();
+            toggleWebPush();
+        };
+    }
+    checkWebPushStatus();
+}
+
+async function authenticatedFetch(url, options = {}, timeoutMs = 35000) {
     const token = getToken();
     if (!token && !url.includes('/auth/')) { window.location.href = '/login'; return null; }
     const headers = { 'Content-Type': 'application/json', ...options.headers };
     if (token) headers['Authorization'] = `Bearer ${token}`;
+    
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), timeoutMs);
     try {
-        const res = await fetch(url, { ...options, headers });
+        const res = await fetch(url, { ...options, headers, signal: controller.signal });
+        clearTimeout(timer);
         if (res.status === 401) { logout(); return null; }
         return res;
-    } catch(e) { console.error("Fetch failed:", e); return null; }
+    } catch(e) { 
+        clearTimeout(timer);
+        if (e.name === 'AbortError') {
+            console.error(`Request to ${url} timed out after ${timeoutMs}ms`);
+        } else {
+            console.error("Fetch failed:", e);
+        }
+        return null; 
+    }
 }
 
 // --- Hybrid Caching Layer ---
+let latestScheduleVersion = 0;
+
 async function getSchedule(forceRefresh = false) {
+    const currentVersion = ++latestScheduleVersion;
     const now = Date.now();
     const CACHE_DURATION = 10 * 60 * 1000; 
     const cachedString = sessionStorage.getItem('schedule_cache');
     let cache = null;
     try { if(cachedString) cache = JSON.parse(cachedString); } catch(e) {}
     if (!forceRefresh && cache && cache.data && (now - cache.timestamp < CACHE_DURATION)) return cache.data;
+
+    // Fast-path: Check if there is already a valid persisted schedule in the vault
+    if (!forceRefresh) {
+        try {
+            const currentRes = await authenticatedFetch(`${API_BASE}/schedule/current`);
+            if (currentRes && currentRes.ok) {
+                const currentData = await currentRes.json();
+                if (currentData && currentData.schedule) {
+                    if (currentVersion === latestScheduleVersion) {
+                        sessionStorage.setItem('schedule_cache', JSON.stringify({ data: currentData, timestamp: now }));
+                    }
+                    return currentData;
+                }
+            }
+        } catch (err) {
+            console.warn("Fast-path schedule fetch failed, falling back to generate:", err);
+        }
+    }
 
     const simulateFever = sessionStorage.getItem('simulate_fever') === 'true';
     const telemetry = simulateFever ? { body_temp_c: 38.5 } : {};
@@ -64,13 +504,16 @@ async function getSchedule(forceRefresh = false) {
         method: 'POST', 
         body: JSON.stringify({ 
             user_id: "current", 
+            force_regen: forceRefresh,
             context: { season: "Hemanta", weather: "Cold", temperature_c: 10.0, calendar_events: [], self_report_symptoms: symptoms },
             wearable_telemetry_7d: telemetry
         }) 
     });
     if (!res) return null;
     const data = await res.json();
-    sessionStorage.setItem('schedule_cache', JSON.stringify({ data: data, timestamp: now }));
+    if (currentVersion === latestScheduleVersion) {
+        sessionStorage.setItem('schedule_cache', JSON.stringify({ data: data, timestamp: now }));
+    }
     return data;
 }
 
@@ -212,6 +655,10 @@ async function showRecalibrationFlowchart(proposedSchedule) {
             if (res && res.ok) { 
                 flowDiv.remove(); 
                 sessionStorage.removeItem('schedule_cache'); 
+                sessionStorage.setItem('schedule_cache', JSON.stringify({ 
+                    data: { schedule: proposedSchedule }, 
+                    timestamp: Date.now() 
+                }));
                 showToast("✓ Vault Synchronized."); 
                 loadDashboardData(); loadRoutineData();
                 resolve(true); 
@@ -228,34 +675,202 @@ async function showRecalibrationFlowchart(proposedSchedule) {
 
 async function loadDashboardData() {
     const container = document.getElementById('dashboard-tasks-container');
-    if (!container || !window.location.pathname.includes('/dashboard')) return;
+    if (!window.location.pathname.includes('/dashboard')) return;
+
+    // Wire Dashboard Action Buttons
+    const viewRoutineBtn = document.getElementById('view-full-routine-btn');
+    if (viewRoutineBtn) viewRoutineBtn.onclick = () => window.location.href = '/routine';
+
+    const viewSleepBtn = document.getElementById('view-sleep-data-btn');
+    if (viewSleepBtn) viewSleepBtn.onclick = () => window.location.href = '/reasoning';
+
+    const fabBtn = document.getElementById('floating-ai-assistant-btn');
+    if (fabBtn) fabBtn.onclick = () => window.location.href = '/reasoning';
+
+    const mobileLogout = document.getElementById('mobile-nav-logout');
+    if (mobileLogout) mobileLogout.onclick = (e) => { e.preventDefault(); logout(); };
+
     try {
-        container.innerHTML = `<div class="p-8 text-center animate-pulse italic opacity-60">Syncing Wellness Vault...</div>`;
-        const data = await getSchedule();
-        if (!data) return;
+        if (container) {
+            container.innerHTML = `<div class="p-8 text-center animate-pulse italic opacity-60">Syncing Wellness Vault...</div>`;
+        }
+
+        // Parallel fetch for schedule, user state, and insights
+        const [data, stateRes, insightsRes] = await Promise.all([
+            getSchedule(),
+            authenticatedFetch(`${API_BASE}/user/state`),
+            authenticatedFetch(`${API_BASE}/insights`).catch(() => null)
+        ]);
+
+        const state = (stateRes && stateRes.ok) ? await stateRes.json() : {};
+
+        // 1. Update User Greeting dynamically
+        const greetingEl = document.getElementById('dashboard-user-greeting');
+        if (greetingEl) {
+            const rawName = state.username || localStorage.getItem('dinacharya_username') || 'Friend';
+            const displayName = rawName.charAt(0).toUpperCase() + rawName.slice(1);
+            greetingEl.innerText = `Welcome back, ${displayName}`;
+        }
+
+        // 2. Update Adherence Score dynamically
+        const adherenceEl = document.getElementById('dashboard-adherence-value');
+        if (adherenceEl && state.adherence_score !== undefined) {
+            const pct = Math.round(state.adherence_score * 100);
+            adherenceEl.innerText = `${pct}%`;
+        }
+
+        // 3. Update Current Dosha & Tags dynamically
+        const doshaTitleEl = document.getElementById('dashboard-dosha-title');
+        const doshaTagsEl = document.getElementById('dashboard-dosha-tags');
+        if (data && data.dosha_profile) {
+            const profile = data.dosha_profile;
+            const flags = profile.vikriti_flags || {};
+            const p = profile.prakriti || {};
+
+            let doshaTitle = "Vata-Pitta Balance";
+            let tags = ["Grounding", "Equilibrium"];
+
+            if (flags.has_fever) {
+                doshaTitle = "Nava Jwara (Fever)";
+                tags = ["Deep Rest", "Hydration", "No Oil"];
+            } else if (flags.vata_aggravated && flags.pitta_aggravated) {
+                doshaTitle = "Vata-Pitta Elevated";
+                tags = ["Grounding", "Cooling"];
+            } else if (flags.vata_aggravated) {
+                doshaTitle = "Vata Aggravated";
+                tags = ["Grounding", "Warmth", "Snigdha"];
+            } else if (flags.pitta_aggravated) {
+                doshaTitle = "Pitta Aggravated";
+                tags = ["Cooling", "Calming", "Moderation"];
+            } else if (flags.kapha_aggravated) {
+                doshaTitle = "Kapha Aggravated";
+                tags = ["Stimulating", "Light", "Movement"];
+            } else if (p.vata || p.pitta || p.kapha) {
+                const maxD = Object.entries({ Vata: p.vata || 0, Pitta: p.pitta || 0, Kapha: p.kapha || 0 }).sort((a,b) => b[1] - a[1])[0][0];
+                doshaTitle = `${maxD} Dominant`;
+                tags = [maxD === "Vata" ? "Warmth" : maxD === "Pitta" ? "Cooling" : "Lightness", "Circadian Sync"];
+            }
+
+            if (doshaTitleEl) doshaTitleEl.innerText = doshaTitle;
+            if (doshaTagsEl) {
+                doshaTagsEl.innerHTML = tags.map((t, idx) => `
+                    <span class="px-3 py-1 rounded-full ${idx === 0 ? 'bg-secondary-container text-on-secondary-container' : 'bg-surface-container text-on-surface-variant'} font-label-sm text-label-sm">${t}</span>
+                `).join('');
+            }
+        }
+
+        // 4. Update Dynamic Insight Highlight from /api/insights
+        if (insightsRes && insightsRes.ok) {
+            try {
+                const insightData = await insightsRes.json();
+                const insights = insightData.insights || {};
+                const topNode = insights['node-result'] || insights['node-vata'] || insights['node-sleep'];
+                if (topNode) {
+                    const titleEl = document.getElementById('dashboard-insight-title');
+                    const descEl = document.getElementById('dashboard-insight-desc');
+                    if (titleEl && topNode.title) titleEl.innerText = topNode.title;
+                    if (descEl && topNode.desc) descEl.innerText = topNode.desc;
+                }
+            } catch(e) {}
+        }
+
+        // 5. Populate Today's Focus with real upcoming tasks across morning/midday/evening
+        if (!container) return;
+        if (!data || !data.schedule) {
+            container.innerHTML = `<p class="p-4 text-center opacity-60">Routine ready to be configured.</p>`;
+            return;
+        }
+
         container.innerHTML = '';
-        const tasks = data.schedule.morning_block || [];
-        if (tasks.length === 0) { container.innerHTML = `<p class="p-4 text-center opacity-60">Block complete.</p>`; return; }
-        tasks.slice(0,3).forEach(task => {
+        const allTasks = [
+            ...(data.schedule.morning_block || []),
+            ...(data.schedule.midday_block || []),
+            ...(data.schedule.evening_block || [])
+        ];
+
+        if (allTasks.length === 0) {
+            container.innerHTML = `<p class="p-4 text-center opacity-60">All practices for today complete.</p>`;
+            return;
+        }
+
+        // Display up to 4 upcoming tasks
+        const displayTasks = allTasks.slice(0, 4);
+        displayTasks.forEach(task => {
+            const taskName = task.name || task.activity || 'Practice';
+            const taskSlot = task.time_slot || 'Flexible';
+            const taskDesc = task.description || task.rationale || 'Ayurvedic daily habit';
+
             const div = document.createElement('div');
-            div.className = 'flex items-center justify-between p-5 rounded-2xl border border-outline-variant/10 bg-white hover:shadow-md cursor-pointer transition-all';
-            div.onclick = async () => {
-                const res = await authenticatedFetch(`${API_BASE}/adherence/log`, { method: 'POST', body: JSON.stringify({ user_id: "current", completed_practices: [task.name], recommended_practices: [] }) });
-                if (res && res.ok) { sessionStorage.removeItem('schedule_cache'); loadDashboardData(); }
+            div.className = 'flex items-center gap-4 p-4 rounded-2xl border border-outline-variant/20 bg-surface-container-lowest/50 hover:bg-surface-container-lowest transition-all cursor-pointer group';
+
+            div.innerHTML = `
+                <div class="w-12 h-12 rounded-full bg-secondary-container flex items-center justify-center text-on-secondary-container shrink-0 group-hover:scale-105 transition-transform">
+                    <span class="material-symbols-outlined" data-icon="spa">spa</span>
+                </div>
+                <div class="flex-grow">
+                    <div class="flex items-center gap-2 mb-1">
+                        <h4 class="font-label-md text-label-md text-on-surface group-hover:text-primary transition-colors">${taskName}</h4>
+                        <span class="text-[10px] uppercase font-bold text-primary/70 bg-primary/5 px-2 py-0.5 rounded">${taskSlot}</span>
+                    </div>
+                    <p class="font-body-sm text-body-sm text-on-surface-variant line-clamp-1">${taskDesc}</p>
+                </div>
+                <button class="task-check-btn w-8 h-8 rounded-full border-2 border-outline-variant flex items-center justify-center hover:border-primary hover:bg-primary/5 transition-all shrink-0" title="Mark as Completed">
+                    <span class="material-symbols-outlined text-[16px] text-primary opacity-0 group-hover:opacity-60 transition-opacity">check</span>
+                </button>
+            `;
+
+            const checkBtn = div.querySelector('.task-check-btn');
+            const checkIcon = div.querySelector('.task-check-btn span');
+
+            const handleComplete = async (e) => {
+                e.stopPropagation();
+                // Visual feedback immediately
+                checkBtn.classList.add('bg-primary', 'border-primary', 'text-on-primary');
+                checkIcon.classList.remove('opacity-0', 'text-primary');
+                checkIcon.classList.add('opacity-100', 'text-white');
+                div.style.opacity = '0.5';
+                div.style.textDecoration = 'line-through';
+                showToast(`✓ Completed ${taskName}`);
+
+                try {
+                    const res = await authenticatedFetch(`${API_BASE}/adherence/log`, {
+                        method: 'POST',
+                        body: JSON.stringify({ user_id: "current", completed_practices: [taskName], recommended_practices: [] })
+                    });
+                    if (res && res.ok) {
+                        sessionStorage.removeItem('schedule_cache');
+                        setTimeout(() => loadDashboardData(), 600);
+                    }
+                } catch(err) {
+                    console.error("Adherence log error:", err);
+                }
             };
-            div.innerHTML = `<div class="flex items-center gap-4"><div class="w-10 h-10 rounded-xl bg-primary/5 text-primary flex items-center justify-center"><span class="material-symbols-outlined">spa</span></div><div><p class="font-bold text-on-surface">${task.name}</p><p class="text-[11px] opacity-60 uppercase">${task.time_slot}</p></div></div>`;
+
+            checkBtn.onclick = handleComplete;
+            div.onclick = handleComplete;
+
             container.appendChild(div);
         });
-    } catch(e) { console.error(e); }
+
+    } catch(e) { console.error("loadDashboardData error:", e); }
 }
 
-async function loadRoutineData() {
+async function loadRoutineData(forceRefresh = false) {
     const container = document.getElementById('routine-timeline-container');
     if (!container || !window.location.pathname.includes('/routine')) return;
     try {
         container.innerHTML = `<div class="p-20 text-center animate-pulse italic text-primary">Accessing Persistent Vault...</div>`;
-        const data = await getSchedule();
-        if (!data) return;
+        const data = await getSchedule(forceRefresh);
+        if (!data || !data.schedule) {
+            container.innerHTML = `
+                <div class="p-12 text-center glass-card bg-surface-container-low/40 border border-error/20 rounded-[2rem] shadow-lg max-w-xl mx-auto my-8">
+                    <span class="material-symbols-outlined text-4xl text-error mb-2">sync_problem</span>
+                    <h4 class="font-headline-sm text-on-surface mb-2">Vault Synchronization Interrupted</h4>
+                    <p class="text-sm opacity-70 mb-6">Unable to retrieve routine from the vault. The service may have encountered a temporary constraint.</p>
+                    <button onclick="loadRoutineData(true)" class="px-6 py-3 bg-primary text-on-primary rounded-xl font-bold shadow-md hover:scale-[1.02] active:scale-95 transition-all">Retry Synchronization</button>
+                </div>`;
+            return;
+        }
         container.innerHTML = '<div class="hidden sm:block absolute left-[120px] top-8 bottom-8 w-[2px] bg-outline-variant/20"></div>';
         ['morning_block', 'midday_block', 'evening_block'].forEach(blockKey => {
             const tasks = data.schedule[blockKey] || [];
@@ -264,17 +879,21 @@ async function loadRoutineData() {
             section.className = 'relative z-10 mb-12 flex flex-col sm:flex-row gap-8';
             let tasksHtml = '';
             tasks.forEach(task => {
+                const taskName = task.name || task.activity || 'Practice';
+                const taskSlot = task.time_slot || task.time || 'Flexible';
+                const taskRationale = task.rationale || task.description || 'Ayurvedic daily practice.';
+                const taskDesc = task.description || '';
                 tasksHtml += `
                     <div class="timeline-card bg-white p-6 rounded-[2rem] border border-outline-variant/10 shadow-sm cursor-pointer mb-4" onclick="this.classList.toggle('expanded')">
                         <div class="flex justify-between items-center">
                             <div class="flex items-center gap-4">
                                 <div class="w-12 h-12 rounded-2xl bg-primary/5 text-primary flex items-center justify-center"><span class="material-symbols-outlined">self_improvement</span></div>
-                                <div><p class="font-bold text-lg">${task.name}</p><p class="text-sm opacity-60">${task.time_slot}</p></div>
+                                <div><p class="font-bold text-lg">${taskName}</p><p class="text-sm opacity-60">${taskSlot}</p></div>
                             </div>
                             <span class="material-symbols-outlined expand-icon">expand_more</span>
                         </div>
-                        <div class="timeline-card-content"><p class="text-on-surface-variant mb-4">${task.description}</p><div class="bg-surface-container-low p-4 rounded-2xl italic text-sm text-primary">"${task.rationale}"</div>
-                        <button class="w-full mt-6 py-3 bg-primary text-on-primary rounded-2xl font-bold" onclick="event.stopPropagation(); authenticatedFetch('${API_BASE}/adherence/log', { method: 'POST', body: JSON.stringify({ user_id: 'current', completed_practices: ['${task.name}'], recommended_practices: [] }) }).then(() => { sessionStorage.removeItem('schedule_cache'); loadRoutineData(); })">Mark Complete</button></div>
+                        <div class="timeline-card-content"><p class="text-on-surface-variant mb-4">${taskDesc}</p><div class="bg-surface-container-low p-4 rounded-2xl italic text-sm text-primary">"${taskRationale}"</div>
+                        <button class="w-full mt-6 py-3 bg-primary text-on-primary rounded-2xl font-bold" onclick="event.stopPropagation(); authenticatedFetch('${API_BASE}/adherence/log', { method: 'POST', body: JSON.stringify({ user_id: 'current', completed_practices: ['${taskName}'], recommended_practices: [] }) }).then(() => { sessionStorage.removeItem('schedule_cache'); loadRoutineData(); })">Mark Complete</button></div>
                     </div>
                 `;
             });
@@ -311,16 +930,34 @@ async function loadInsightsData() {
                 const indicator = createTypingIndicator();
                 chatHistory.appendChild(indicator);
                 chatHistory.scrollTop = chatHistory.scrollHeight;
-                const chatRes = await authenticatedFetch(`${API_BASE}/chat`, { method: 'POST', body: JSON.stringify({ message: msg }) });
-                if (chatRes) {
+                const chatRes = await authenticatedFetch(`${API_BASE}/chat`, { method: 'POST', body: JSON.stringify({ message: msg }) }, 50000);
+                indicator.remove();
+                if (chatRes && chatRes.ok) {
                     const chatData = await chatRes.json();
-                    indicator.remove();
                     await typeMessage(chatHistory, chatData.response);
-                    if (chatData.proposed_schedule) {
+                    if (chatData.schedule_updated && chatData.proposed_schedule) {
+                        latestScheduleVersion++;
+                        sessionStorage.removeItem('schedule_cache');
+                        sessionStorage.setItem('schedule_cache', JSON.stringify({ 
+                            data: { schedule: chatData.proposed_schedule }, 
+                            timestamp: Date.now() 
+                        }));
+                        showToast("✓ Vault Synchronized.");
+                        loadDashboardData();
+                        loadRoutineData();
+                    } else if (chatData.proposed_schedule) {
                         const accepted = await showRecalibrationFlowchart(chatData.proposed_schedule);
-                        if (accepted) { await typeMessage(chatHistory, "Approval relayed to Planner Agent. Your vault is now synchronized."); loadRoutineData(); }
+                        if (accepted) { 
+                            await typeMessage(chatHistory, "Approval relayed to Planner Agent. Your vault is now synchronized."); 
+                            sessionStorage.removeItem('schedule_cache');
+                            loadDashboardData();
+                            loadRoutineData(); 
+                        }
                     }
-                } else { indicator.remove(); }
+                } else {
+                    await typeMessage(chatHistory, "Namaste. I am currently experiencing high network latency connecting to the reasoning cluster. Your routine remains safe and preserved. Please try again shortly. 🙏");
+                    showToast("Connection timed out. Please retry.");
+                }
             };
         }
     } catch(e) { console.error(e); }
@@ -360,7 +997,11 @@ function initApp() {
             const p = document.getElementById('password').value;
             const res = await fetch(`${API_BASE}/auth/login`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ username: u, password: p }) });
             const data = await res.json();
-            if (res.ok) { setToken(data.token); window.location.href = data.has_completed_onboarding ? '/dashboard' : '/onboarding'; }
+            if (res.ok) { 
+                setToken(data.token); 
+                if (data.username || u) localStorage.setItem('dinacharya_username', data.username || u);
+                window.location.href = data.has_completed_onboarding ? '/dashboard' : '/onboarding'; 
+            }
             else showToast("Invalid credentials");
         };
     }
@@ -383,15 +1024,50 @@ function initApp() {
             const p = document.getElementById('password').value;
             const res = await fetch(`${API_BASE}/auth/register`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ username: u, password: p }) });
             const data = await res.json();
-            if (res.ok) { setToken(data.token); window.location.href = '/onboarding'; }
+            if (res.ok) { 
+                setToken(data.token); 
+                if (data.username || u) localStorage.setItem('dinacharya_username', data.username || u);
+                window.location.href = '/onboarding'; 
+            }
             else showToast("Registration failed");
+        };
+    }
+
+    // Wire Auxiliary & Informational Buttons
+    document.querySelectorAll('a[href="#"]').forEach(a => {
+        if (a.innerText.includes('Support')) {
+            a.onclick = (e) => {
+                e.preventDefault();
+                showToast("Clinical Support: Ask questions directly to Vaidya AI in Chat.");
+            };
+        } else if (a.innerText.includes('Privacy') || a.innerText.includes('Terms')) {
+            a.onclick = (e) => {
+                e.preventDefault();
+                showToast("Data Vault: All health telemetry is stored locally in SQLite.");
+            };
+        }
+    });
+
+    const attachBtn = document.querySelector('button[data-icon="attachment"]')?.closest('button') || document.querySelector('button:has(span[data-icon="attachment"])');
+    if (attachBtn) {
+        attachBtn.onclick = (e) => {
+            e.preventDefault();
+            showToast("Biometric Sync: Smart sensor baseline stream is active.");
         };
     }
 
     loadDashboardData();
     loadRoutineData();
     loadInsightsData();
+    initNotifications();
+    initWebPush();
 }
 
-document.addEventListener('DOMContentLoaded', initApp);
-if (document.readyState === 'complete' || document.readyState === 'interactive') initApp();
+let appInitialized = false;
+function safeInitApp() {
+    if (appInitialized) return;
+    appInitialized = true;
+    initApp();
+}
+document.addEventListener('DOMContentLoaded', safeInitApp);
+if (document.readyState === 'complete' || document.readyState === 'interactive') safeInitApp();

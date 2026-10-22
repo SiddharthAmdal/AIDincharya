@@ -1,5 +1,5 @@
 import logging
-from typing import List, Dict
+from typing import List, Dict, Any, Optional
 
 logger = logging.getLogger("BehaviorEngine")
 
@@ -14,13 +14,66 @@ class AdherenceTracker:
     @staticmethod
     def calculate_adherence_score(completed_count: int, recommended_count: int) -> float:
         """
-        Computes the Adherence Score (S_adj) as the ratio of completed to recommended tasks.
-        Returns a float between 0.0 and 1.0.
+        Computes basic static Adherence Score (S_adj) as ratio of completed to recommended tasks.
+        Returns a bounded float between 0.0 and 1.0.
         """
         if recommended_count <= 0:
             return 1.0
         score = completed_count / recommended_count
         return round(min(max(score, 0.0), 1.0), 2)
+
+    @staticmethod
+    def calculate_time_decay_adherence(
+        history: List[Dict[str, Any]],
+        decay_factor: float = 0.85
+    ) -> float:
+        """
+        Computes dynamic Adherence Score using exponential time-decay weighting:
+        w(d) = decay_factor^d, where d is the number of days ago the event occurred.
+        
+        Status weights:
+        - 'completed': 1.0
+        - 'rescheduled': 0.7 (mindful accommodation)
+        - 'skipped': 0.0
+        
+        Deduplicates events by (activity, days_ago) taking highest status weight.
+        Returns bounded score in [0.0, 1.0]. Returns 1.0 for fresh users with no history.
+        """
+        if not history:
+            return 1.0
+
+        status_weights = {
+            "completed": 1.0,
+            "rescheduled": 0.7,
+            "partially_completed": 0.5,
+            "skipped": 0.0
+        }
+
+        # Deduplicate records by (activity_name, days_ago) taking max weight
+        deduped: Dict[tuple, float] = {}
+        for entry in history:
+            activity = str(entry.get("activity") or entry.get("practice_name") or "practice").lower()
+            days_ago = max(0, int(entry.get("days_ago", 0)))
+            status = str(entry.get("status", "completed")).lower()
+            weight = status_weights.get(status, 1.0 if status == "completed" else 0.0)
+
+            key = (activity, days_ago)
+            if key not in deduped or weight > deduped[key]:
+                deduped[key] = weight
+
+        weighted_achieved = 0.0
+        weighted_possible = 0.0
+
+        for (activity, days_ago), score_weight in deduped.items():
+            decay_weight = decay_factor ** days_ago
+            weighted_achieved += score_weight * decay_weight
+            weighted_possible += 1.0 * decay_weight
+
+        if weighted_possible <= 0:
+            return 1.0
+
+        final_score = weighted_achieved / weighted_possible
+        return round(min(max(final_score, 0.0), 1.0), 2)
 
     @staticmethod
     def determine_complexity(rolling_adherence_score: float) -> str:
@@ -60,5 +113,7 @@ class AdherenceTracker:
                 "title": "Great progress!",
                 "message": "Keep going! Your daily routine is perfectly tuned to support your active Dosha balance today."
             }
+
+
 class BehaviorEngine:
     pass
