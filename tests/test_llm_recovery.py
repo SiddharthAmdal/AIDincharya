@@ -40,6 +40,7 @@ app.dependency_overrides[get_current_user] = mocked_get_current_user
 
 @pytest.fixture(autouse=True)
 def ensure_db():
+    app.dependency_overrides[get_current_user] = mocked_get_current_user
     db.init_db()
 
 
@@ -126,6 +127,47 @@ def test_gateway_fallback_trigger_on_failure():
         assert result["morning_block"][0]["name"] == "Fallback Wake"
     finally:
         gateway.create_chat_completion = orig_fn
+
+
+def test_gateway_third_fallback_to_gemini_provider(monkeypatch):
+    """
+    Verify LLMGateway fails over to the 3rd fallback provider (Google AI Studio Gemini API
+    with gemini-1.5-flash) when both the primary and secondary NVIDIA models fail.
+    """
+    monkeypatch.setenv("GEMINI_API_KEY", "test_valid_ai_studio_gemini_key")
+    monkeypatch.setenv("GEMINI_MODEL", "gemini-1.5-flash")
+    gateway = LLMGateway()
+
+    # Primary client (NVIDIA) fails for both primary and secondary models
+    mock_primary_client = MagicMock()
+    mock_primary_client.chat.completions.create.side_effect = RuntimeError("timeout on primary provider")
+    gateway.client = mock_primary_client
+
+    # Third fallback client (Google AI Studio Gemini) succeeds
+    mock_gemini_client = MagicMock()
+    mock_msg = MagicMock()
+    mock_msg.content = '{"status": "recovered_via_gemini"}'
+    mock_msg.reasoning_content = None
+    mock_msg.tool_calls = None
+    mock_choice = MagicMock()
+    mock_choice.message = mock_msg
+    mock_resp = MagicMock()
+    mock_resp.choices = [mock_choice]
+    mock_resp.usage.prompt_tokens = 12
+    mock_resp.usage.completion_tokens = 8
+    mock_gemini_client.chat.completions.create.return_value = mock_resp
+
+    gateway._build_gemini_client = MagicMock(return_value=mock_gemini_client)
+    gateway.gemini_client = mock_gemini_client
+
+    res = gateway.create_chat_completion(
+        messages=[{"role": "user", "content": "Hello"}],
+        retries_per_model=1
+    )
+    assert res.is_fallback is True
+    assert res.model_used == "gemini-1.5-flash"
+    assert res.content == '{"status": "recovered_via_gemini"}'
+    assert mock_gemini_client.chat.completions.create.call_count == 1
 
 
 def test_tool_execution_dispatcher():
@@ -446,3 +488,187 @@ def test_api_notifications_endpoints():
     read_res = client.post(f"/api/notifications/{notif_id}/read")
     assert read_res.status_code == 200
     assert read_res.json()["success"] is True
+
+
+def test_gateway_primary_success():
+    """
+    Verify LLMGateway returns primary model response directly without fallback when primary succeeds.
+    """
+    gateway = LLMGateway()
+    mock_client = MagicMock()
+    mock_choice = MagicMock()
+    mock_choice.message.content = "Primary model response"
+    mock_choice.message.reasoning_content = None
+    mock_choice.message.tool_calls = None
+    mock_resp = MagicMock()
+    mock_resp.choices = [mock_choice]
+    mock_resp.usage.prompt_tokens = 20
+    mock_resp.usage.completion_tokens = 10
+    mock_client.chat.completions.create.return_value = mock_resp
+    gateway.client = mock_client
+
+    res = gateway.create_chat_completion(
+        messages=[{"role": "user", "content": "Hello"}],
+        retries_per_model=1
+    )
+    assert res.is_fallback is False
+    assert res.model_used == gateway.primary_model
+    assert res.content == "Primary model response"
+    assert mock_client.chat.completions.create.call_count == 1
+
+
+def test_gateway_primary_failure_fallback_success():
+    """
+    Verify LLMGateway fails over to secondary model when primary model fails.
+    """
+    gateway = LLMGateway()
+    mock_client = MagicMock()
+
+    # First call (primary model) raises, second call (secondary model) succeeds
+    mock_choice = MagicMock()
+    mock_choice.message.content = "Secondary fallback response"
+    mock_choice.message.reasoning_content = None
+    mock_choice.message.tool_calls = None
+    mock_resp = MagicMock()
+    mock_resp.choices = [mock_choice]
+    mock_resp.usage.prompt_tokens = 25
+    mock_resp.usage.completion_tokens = 15
+
+    mock_client.chat.completions.create.side_effect = [
+        RuntimeError("Primary model 503 service unavailable"),
+        mock_resp
+    ]
+    gateway.client = mock_client
+
+    res = gateway.create_chat_completion(
+        messages=[{"role": "user", "content": "Plan day"}],
+        retries_per_model=1
+    )
+    assert res.is_fallback is True
+    assert res.model_used == gateway.fallback_model
+    assert res.content == "Secondary fallback response"
+    assert mock_client.chat.completions.create.call_count == 2
+
+
+def test_gateway_all_providers_failing(monkeypatch):
+    """
+    Verify LLMGateway raises RuntimeError when all configured models and tiers fail.
+    """
+    monkeypatch.setenv("GEMINI_API_KEY", "test_key")
+    gateway = LLMGateway()
+
+    mock_client = MagicMock()
+    mock_client.chat.completions.create.side_effect = RuntimeError("500 Internal Server Error")
+    gateway.client = mock_client
+
+    mock_gemini = MagicMock()
+    mock_gemini.chat.completions.create.side_effect = RuntimeError("Gemini 500 Outage")
+    gateway._build_gemini_client = MagicMock(return_value=mock_gemini)
+    gateway.gemini_client = mock_gemini
+
+    with pytest.raises(RuntimeError, match="All LLM models and retries exhausted"):
+        gateway.create_chat_completion(
+            messages=[{"role": "user", "content": "Help"}],
+            retries_per_model=1
+        )
+
+
+def test_gateway_non_retryable_auth_and_invalid_model_fails_over_immediately():
+    """
+    Verify LLMGateway does NOT retry permanent configuration or auth errors (401/404) pointlessly,
+    failing over immediately to the next candidate model on attempt 1.
+    """
+    gateway = LLMGateway()
+    mock_client = MagicMock()
+
+    mock_choice = MagicMock()
+    mock_choice.message.content = "Fallback recovered after 401"
+    mock_choice.message.reasoning_content = None
+    mock_choice.message.tool_calls = None
+    mock_resp = MagicMock()
+    mock_resp.choices = [mock_choice]
+    mock_resp.usage.prompt_tokens = 10
+    mock_resp.usage.completion_tokens = 5
+
+    # Attempt on primary model raises 401 Unauthorized; attempt on fallback model succeeds
+    mock_client.chat.completions.create.side_effect = [
+        RuntimeError("401 Unauthorized: Invalid API Key"),
+        mock_resp
+    ]
+    gateway.client = mock_client
+
+    res = gateway.create_chat_completion(
+        messages=[{"role": "user", "content": "Check auth"}],
+        retries_per_model=3  # Configured for 3 retries, but 401 must NOT retry
+    )
+    assert res.is_fallback is True
+    assert res.model_used == gateway.fallback_model
+    assert res.content == "Fallback recovered after 401"
+    # Primary model called exactly once because 401 is non-retryable
+    assert mock_client.chat.completions.create.call_count == 2
+
+
+def test_gateway_rate_limit_retries_then_falls_over():
+    """
+    Verify LLMGateway retries transient rate limits (429) up to retries_per_model before falling over.
+    """
+    gateway = LLMGateway()
+    mock_client = MagicMock()
+
+    mock_choice = MagicMock()
+    mock_choice.message.content = "Fallback after rate limit"
+    mock_choice.message.reasoning_content = None
+    mock_choice.message.tool_calls = None
+    mock_resp = MagicMock()
+    mock_resp.choices = [mock_choice]
+    mock_resp.usage.prompt_tokens = 10
+    mock_resp.usage.completion_tokens = 5
+
+    # Model 1 fails twice with 429 RateLimit; Model 2 succeeds
+    mock_client.chat.completions.create.side_effect = [
+        RuntimeError("429 Too Many Requests: Rate limit exceeded"),
+        RuntimeError("429 Too Many Requests: Rate limit exceeded"),
+        mock_resp
+    ]
+    gateway.client = mock_client
+
+    res = gateway.create_chat_completion(
+        messages=[{"role": "user", "content": "Check rate limit"}],
+        retries_per_model=2
+    )
+    assert res.is_fallback is True
+    assert res.model_used == gateway.fallback_model
+    assert res.content == "Fallback after rate limit"
+    assert mock_client.chat.completions.create.call_count == 3
+
+
+def test_gateway_tool_calls_compatibility():
+    """
+    Verify LLMGateway correctly surfaces tool_calls from provider responses.
+    """
+    gateway = LLMGateway()
+    mock_client = MagicMock()
+
+    mock_tool_call = {
+        "id": "call_123",
+        "type": "function",
+        "function": {"name": "query_ayurvedic_knowledge", "arguments": '{"query": "Dinacharya"}'}
+    }
+    mock_choice = MagicMock()
+    mock_choice.message.content = ""
+    mock_choice.message.reasoning_content = "Checking knowledge base first"
+    mock_choice.message.tool_calls = [mock_tool_call]
+    mock_resp = MagicMock()
+    mock_resp.choices = [mock_choice]
+    mock_resp.usage.prompt_tokens = 30
+    mock_resp.usage.completion_tokens = 20
+    mock_client.chat.completions.create.return_value = mock_resp
+    gateway.client = mock_client
+
+    res = gateway.create_chat_completion(
+        messages=[{"role": "user", "content": "Find sources"}],
+        tools=[{"type": "function", "function": {"name": "query_ayurvedic_knowledge"}}],
+        retries_per_model=1
+    )
+    assert res.tool_calls == [mock_tool_call]
+    assert res.reasoning_content == "Checking knowledge base first"

@@ -120,6 +120,19 @@ def init_db():
     ''')
     c.execute('CREATE INDEX IF NOT EXISTS idx_push_subs_user_id ON push_subscriptions(user_id)')
     c.execute('CREATE INDEX IF NOT EXISTS idx_push_subs_endpoint ON push_subscriptions(endpoint)')
+
+    # Completions table (task adherence logging)
+    c.execute('''
+        CREATE TABLE IF NOT EXISTS completions (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id INTEGER NOT NULL,
+            practice_name TEXT NOT NULL,
+            completion_date DATE DEFAULT (CURRENT_DATE),
+            timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY (user_id) REFERENCES users (id)
+        )
+    ''')
+    c.execute('CREATE INDEX IF NOT EXISTS idx_completions_user_date ON completions(user_id, completion_date)')
     
     conn.commit()
     conn.close()
@@ -267,13 +280,17 @@ def update_user_questionnaire(user_id, responses: Dict[str, Any]):
 def get_user_state(user_id) -> Dict[str, Any]:
     conn = get_db_connection()
     c = conn.cursor()
-    c.execute('SELECT * FROM user_state WHERE user_id = ?', (user_id,))
+    c.execute('SELECT s.*, u.username FROM user_state s LEFT JOIN users u ON s.user_id = u.id WHERE s.user_id = ?', (user_id,))
     row = c.fetchone()
-    conn.close()
     if not row:
-        return {}
+        c.execute('SELECT username FROM users WHERE id = ?', (user_id,))
+        urow = c.fetchone()
+        conn.close()
+        return {"username": urow["username"] if urow else ""}
+    conn.close()
     
     return {
+        "username": row["username"] or "",
         "adherence_score": row["adherence_score"],
         "has_completed_onboarding": bool(row["has_completed_onboarding"]),
         "questionnaire_responses": json.loads(row["questionnaire_responses"] or '{}'),

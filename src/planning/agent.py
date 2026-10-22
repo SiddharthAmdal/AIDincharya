@@ -54,25 +54,163 @@ def standardize_slot(slot_str: str) -> str:
 
 def extract_practice_time_updates(text: str, practice_names: List[str]) -> Dict[str, str]:
     """
-    Extracts practice names and requested new time slots from proposal or directive text.
+    Extracts practice names and requested/proposed new time slots from proposal or directive text.
+    Prioritizes positive proposal/recommendation lines ('propose', 'recommend', 'instead', 'shift')
+    and ignores lines that explicitly reject a contraindicated slot or mention another practice
+    purely as a relative reference (e.g. "before 'Light Early Dinner' (19:00 - 19:30)").
     Standardizes slots into 24h format (e.g. '22:15 - 22:30').
     """
     if not text:
         return {}
     updates = {}
     time_slot_regex = r"(?:(?:[01]?\d|2[0-3]):[0-5]\d\s*(?:AM|PM|am|pm)?\s*(?:-|–|—|to)\s*(?:[01]?\d|2[0-3]):[0-5]\d\s*(?:AM|PM|am|pm)?)"
-    
+    single_time_regex = r"\b((?:[01]?\d|2[0-3]):[0-5]\d\s*(?:AM|PM|am|pm)?|\d{1,2}\s*(?:AM|PM|am|pm))\b"
+
+    negative_markers = [
+        "contraindicated", "not recommended", "cannot", "can't", "avoid",
+        "do not", "don't", "violates", "disrupts", "refrain", "instead of"
+    ]
+    positive_markers = [
+        "propose", "recommend", "suggest", "instead", "shift", "move",
+        "update", "schedule at", "scheduling", "confirm"
+    ]
+    stop_tokens = {
+        "warm", "light", "early", "daily", "morning", "evening", "midday",
+        "routine", "practice", "with", "from", "gentle", "cooling", "grounding",
+        "pacifying", "pitta", "vata", "kapha", "heaviest"
+    }
+
     for p_name in practice_names:
-        keywords = [k.strip() for k in re.split(r"[/()]", p_name) if len(k.strip()) >= 4]
-        pattern = "|".join([re.escape(k) for k in keywords]) if keywords else re.escape(p_name)
-        
-        for line in text.split("\n"):
-            if re.search(pattern, line, re.IGNORECASE):
-                slots = re.findall(time_slot_regex, line)
-                if slots:
-                    updates[p_name] = standardize_slot(slots[-1])
-                    break
+        if not p_name:
+            continue
+        phrase_parts = [k.strip() for k in re.split(r"[/()&]", p_name) if len(k.strip()) >= 4]
+        word_parts = [
+            w.strip() for w in re.split(r"[\s/()&,\-]+", p_name)
+            if len(w.strip()) >= 5 and w.strip().lower() not in stop_tokens
+        ]
+        keywords = list(dict.fromkeys([p_name.strip()] + phrase_parts + word_parts))
+        pattern = "|".join([r"\b" + re.escape(k) + r"\b" for k in keywords]) if keywords else re.escape(p_name)
+
+        best_slot = None
+        fallback_slot = None
+
+        for raw_line in text.split("\n"):
+            # Strip parenthetical rationale clauses that reference adjacent meals/practices (e.g. "(... before 'Light Early Dinner' (19:00 - 19:30))")
+            line = re.sub(
+                r"\([^()\n]*(?:before|after|stomach|digestion|conflict|overlap)[^()\n]*(?:\([^()\n]*\)[^()\n]*)*\)",
+                "",
+                raw_line,
+                flags=re.IGNORECASE,
+            )
+            # Also strip clauses starting with "Alternatively," so secondary suggestions don't overwrite the primary recommendation
+            line = re.split(r"\bAlternatively\b", line, flags=re.IGNORECASE)[0]
+
+            if not re.search(pattern, line, re.IGNORECASE):
+                continue
+            # Strip 'from <old_time_or_slot> to ' transition prefixes so 'from 6:30 AM to 7:30 PM'
+            # or 'from 19:00 - 19:30 to 20:00' extracts the target time ('7:30 PM' / '20:00') rather than the old time
+            line_clean = re.sub(
+                r"\bfrom\s+(?:(?:[01]?\d|2[0-3]):[0-5]\d|\d{1,2})(?:\s*(?:AM|PM|am|pm))?(?:\s*(?:-|–|—)\s*(?:[01]?\d|2[0-3]):[0-5]\d(?:\s*(?:AM|PM|am|pm))?)?\s+to\s+",
+                "to ",
+                line,
+                flags=re.IGNORECASE,
+            )
+            line_lower = line_clean.lower()
+            slots = re.findall(time_slot_regex, line_clean)
+            if slots:
+                # Guard against a 'to' phrase spanning > 120 minutes (e.g. '6:30 AM to 7:30 PM')
+                from src.safety.guardrails import _parse_slot_minutes, _format_minutes_to_slot
+                valid_slots = []
+                for raw_s in slots:
+                    std_s = standardize_slot(raw_s)
+                    parsed_s = _parse_slot_minutes(std_s, 15)
+                    if parsed_s and (parsed_s[1] - parsed_s[0]) > 120 and re.search(r"\bto\b", raw_s, re.IGNORECASE):
+                        rhs = re.split(r"\bto\b", raw_s, flags=re.IGNORECASE)[-1].strip()
+                        rhs_parsed = _parse_slot_minutes(rhs, 15)
+                        if rhs_parsed:
+                            valid_slots.append(_format_minutes_to_slot(rhs_parsed[0], rhs_parsed[1]))
+                    else:
+                        valid_slots.append(std_s)
+                slots = valid_slots
+            if not slots:
+                # Check for single time mention like "at 7:30 PM" or "at 19:30" or "to 8 PM"
+                singles = re.findall(single_time_regex, line_clean)
+                if singles:
+                    from src.safety.guardrails import _parse_slot_minutes, _format_minutes_to_slot
+                    parsed = _parse_slot_minutes(singles[-1], 15)
+                    if parsed:
+                        slots = [_format_minutes_to_slot(parsed[0], parsed[1])]
+
+            if not slots:
+                continue
+
+            candidate = standardize_slot(slots[-1])
+            has_neg = any(neg in line_lower for neg in negative_markers)
+            has_pos = any(pos in line_lower for pos in positive_markers)
+
+            if has_pos and not has_neg:
+                best_slot = candidate
+            elif has_pos and has_neg and ("instead" in line_lower or "recommend" in line_lower):
+                best_slot = candidate
+            elif not has_neg:
+                fallback_slot = candidate
+
+        if best_slot:
+            updates[p_name] = best_slot
+        elif fallback_slot:
+            updates[p_name] = fallback_slot
+
     return updates
+
+
+def _apply_principle_validated_updates(
+    state: "AgentState",
+    updates: Dict[str, str]
+) -> None:
+    """
+    Validates extracted practice time updates against ClinicalRuleEngine.evaluate_reschedule_request.
+    Applies valid slots directly; if a requested slot violates Ayurvedic/Yogic principles (e.g. post-meal
+    Bhuktavastu rule), substitutes the top recommended safe alternative and logs the reasoning.
+    """
+    if not updates:
+        return
+    from src.safety.guardrails import ClinicalRuleEngine
+
+    current_sched_dict = {
+        "schedule": {
+            "morning_block": [p.model_dump() for p in state["morning_block"]],
+            "midday_block": [p.model_dump() for p in state["midday_block"]],
+            "evening_block": [p.model_dump() for p in state["evening_block"]],
+        }
+    }
+    cal_events = state["context"].calendar_events if state.get("context") else []
+    syms = state["context"].self_report_symptoms if state.get("context") else []
+
+    for blk in ["morning_block", "midday_block", "evening_block"]:
+        for p in state[blk]:
+            if p.name in updates:
+                req_slot = updates[p.name]
+                eval_res = ClinicalRuleEngine.evaluate_reschedule_request(
+                    activity_name=p.name,
+                    proposed_slot=req_slot,
+                    current_schedule=current_sched_dict,
+                    profile=state.get("profile"),
+                    calendar_events=cal_events,
+                    symptoms=syms,
+                    use_llm=False
+                )
+                if eval_res["is_valid"]:
+                    p.time_slot = eval_res["proposed_slot"]
+                else:
+                    alts = eval_res.get("recommended_alternatives", [])
+                    safe_slot = alts[0]["proposed_slot"] if alts else p.time_slot
+                    p.time_slot = safe_slot
+                    log_msg = (
+                        f"Principle Guardrail: Requested slot '{req_slot}' for '{p.name}' was rejected "
+                        f"({eval_res['clinical_explanation']}). Placed at nearest valid slot '{safe_slot}'."
+                    )
+                    state["refinement_logs"].append(log_msg)
+                    logger.info(log_msg)
 
 
 # Define State for our LangGraph planner
@@ -143,10 +281,22 @@ class DinacharyaPlannerAgent:
 
     def retrieve_guidelines_node(self, state: AgentState) -> AgentState:
         """
-        Stage 1: Retrieval. Fetches top-k authentic Ayurvedic guidelines based on state.
+        Stage 1: Retrieval. Fetches top-k authentic Ayurvedic guidelines based on state
+        and any specific rescheduling instruction.
         """
         logger.info(f"Retrieving classical guidelines for user {state['user_id']}")
         guidelines = query_ayurvedic_knowledge(profile=state["profile"], context=state["context"])
+        user_inst = state.get("user_instruction")
+        if user_inst:
+            extra = self.kb.retrieve_by_query(
+                f"{user_inst} empty stomach meal gap bhuktavastu contraindications timing rules",
+                k=3
+            )
+            seen = {g["text"][:120] for g in guidelines}
+            for eg in extra:
+                if eg["text"][:120] not in seen:
+                    guidelines.append(eg)
+                    seen.add(eg["text"][:120])
         state["retrieved_guidelines"] = guidelines
         return state
 
@@ -178,15 +328,19 @@ class DinacharyaPlannerAgent:
                             current_routine_text += f"- {p.get('name', 'Practice')} ({p.get('time_slot', 'Flexible')})\n"
 
         if user_instruction:
-            prompt = f"""You are an expert Ayurvedic Planner Agent. You are performing a CRITICAL RECALIBRATION.
+            prompt = f"""You are an expert Ayurvedic Planner Agent performing a PRINCIPLE-GROUNDED RECALIBRATION.
 
-USER DIRECTIVE / AGREED CHANGES (MANDATORY): {user_instruction}
+USER DIRECTIVE / REQUESTED CHANGES: {user_instruction}
 
-ZERO-VARIANCE RULES:
-1. You MUST extract every task name and every time slot mentioned in the 'AGREED PROPOSAL' or 'USER DIRECTIVE'.
-2. You are FORBIDDEN from changing these times. If the agreement says "22:00 - 06:00", you MUST use "22:00 - 06:00".
-3. Your primary goal is 100% synchronization with what the user and Vaidya AI just discussed.
-4. Use your Ayurvedic knowledge ONLY to balance the non-conflicting parts of the day.
+AUTHENTIC AYURVEDIC & YOGIC GUIDELINES (from Grounding Knowledge Base):
+{guidelines_text}
+
+PRINCIPLE-VALIDATION RULES:
+1. Inspect the USER'S CURRENT SCHEDULE and evaluate whether the requested time slot respects classical Ayurvedic & Yogic principles:
+   - Empty Stomach / Bhuktavastu Rule: Pranayama, Asana, Vyayama, Abhyanga, and Snana MUST NOT be scheduled immediately after a meal (require at least 90-120 minutes after a light meal or 3-4 hours after a main meal, OR 15-30 minutes BEFORE a meal).
+   - Kriya Krama Sequence: Abhyanga precedes Snana; vigorous exercise is avoided after 20:00.
+2. If the requested time slot passes these principles, apply the exact requested time slot and keep all unrelated activities untouched.
+3. If the requested time slot VIOLATES these principles, place the activity in the nearest valid time window (e.g., 30 minutes before dinner or 90-120 minutes after dinner) and explain the principle in its rationale.
 
 USER'S CURRENT SCHEDULE (TO BE MODIFIED):
 {current_routine_text}
@@ -246,7 +400,7 @@ JSON STRUCTURE (Return ONLY valid JSON):
                 messages=[
                     {
                         "role": "system",
-                        "content": "You are a precise Ayurvedic routine parser. You output strict JSON. Keep internal reasoning concise. You prioritize user directives and agreed timings above all clinical defaults. You MUST NOT deviate from requested times."
+                        "content": "You are a clinical Ayurvedic routine planner. You output strict JSON. You honor user timing requests ONLY when they comply with Ayurvedic & Yogic digestive/temporal principles (such as empty stomach before Pranayama/Vyayama/Snana)."
                     },
                     {"role": "user", "content": prompt}
                 ],
@@ -256,7 +410,9 @@ JSON STRUCTURE (Return ONLY valid JSON):
             )
 
             state["is_fallback"] = is_fallback
-            state["model_used"] = self.gateway.fallback_model if is_fallback else self.gateway.primary_model
+            state["model_used"] = getattr(self.gateway, "last_model_used", None) or (
+                self.gateway.fallback_model if is_fallback else self.gateway.primary_model
+            )
 
             def parse_block(block_name):
                 practices = []
@@ -274,15 +430,12 @@ JSON STRUCTURE (Return ONLY valid JSON):
             state["midday_block"] = parse_block("midday_block")
             state["evening_block"] = parse_block("evening_block")
 
-            # Zero-variance check: enforce any requested practice updates directly
+            # Principle-validated check: validate any requested practice updates against schedule & RAG rules
             if user_instruction:
                 all_practices = state["morning_block"] + state["midday_block"] + state["evening_block"]
                 p_names = [p.name for p in all_practices]
                 updates = extract_practice_time_updates(user_instruction, p_names)
-                for blk in ["morning_block", "midday_block", "evening_block"]:
-                    for p in state[blk]:
-                        if p.name in updates:
-                            p.time_slot = updates[p.name]
+                _apply_principle_validated_updates(state, updates)
 
             total_practices = len(state["morning_block"]) + len(state["midday_block"]) + len(state["evening_block"])
             if total_practices == 0:
@@ -359,10 +512,7 @@ JSON STRUCTURE (Return ONLY valid JSON):
                 if user_inst:
                     all_p = state["morning_block"] + state["midday_block"] + state["evening_block"]
                     updates = extract_practice_time_updates(user_inst, [p.name for p in all_p])
-                    for blk in ["morning_block", "midday_block", "evening_block"]:
-                        for p in state[blk]:
-                            if p.name in updates:
-                                p.time_slot = updates[p.name]
+                    _apply_principle_validated_updates(state, updates)
                 return state
 
         p = profile.prakriti
@@ -405,14 +555,11 @@ JSON STRUCTURE (Return ONLY valid JSON):
                 Practice(name="Trataka / Reflection", time_slot="21:30 - 21:45", duration_minutes=15, description="Dim lights, practice soft breathing, and prepare for rest.", rationale="Supports melatonin release and calms sensory organs.")
             ]
 
-        # Apply any extracted time updates from user instruction if present
+        # Apply any extracted time updates from user instruction if present (principle-validated)
         if user_inst:
             all_p = state["morning_block"] + state["midday_block"] + state["evening_block"]
             updates = extract_practice_time_updates(user_inst, [p.name for p in all_p])
-            for blk in ["morning_block", "midday_block", "evening_block"]:
-                for p in state[blk]:
-                    if p.name in updates:
-                        p.time_slot = updates[p.name]
+            _apply_principle_validated_updates(state, updates)
 
         return state
 
@@ -540,20 +687,40 @@ JSON STRUCTURE (Return ONLY valid JSON):
         # Scenario 1: Missed Activity
         elif event_type == "missed_activity":
             missed_name = event_data.get("activity_name", "")
+            requested_comp_slot = event_data.get("proposed_slot", "18:30 - 18:45")
             found = False
+            from src.safety.guardrails import ClinicalRuleEngine
             for p in m_prac:
                 if missed_name.lower() in p.name.lower():
                     found = True
                     affected_activities.append(p.name)
-                    # Reallocate a shortened 15-minute gentle version into evening
+                    eval_comp = ClinicalRuleEngine.evaluate_reschedule_request(
+                        activity_name=p.name,
+                        proposed_slot=requested_comp_slot,
+                        current_schedule=current_schedule,
+                        profile=profile,
+                        calendar_events=context.calendar_events,
+                        symptoms=context.self_report_symptoms,
+                        use_llm=False
+                    )
+                    if eval_comp["is_valid"]:
+                        comp_slot = eval_comp["proposed_slot"]
+                        comp_rationale = "Restores constitutional balance in an empty-stomach pre-dinner window."
+                    else:
+                        alts = eval_comp.get("recommended_alternatives", [])
+                        comp_slot = alts[0]["proposed_slot"] if alts else "18:30 - 18:45"
+                        comp_rationale = (
+                            f"Placed at {comp_slot} to maintain proper post-meal/pre-meal spacing "
+                            f"({eval_comp['clinical_explanation']})."
+                        )
                     e_prac.insert(0, Practice(
                         name=f"Compensatory {p.name}",
-                        time_slot="18:30 - 18:45",
+                        time_slot=comp_slot,
                         duration_minutes=15,
                         description=f"Gentle catch-up session for missed {p.name}.",
-                        rationale="Restores constitutional balance without overburdening the morning."
+                        rationale=comp_rationale
                     ))
-                    change_rationale = f"Missed '{p.name}' rescheduled to 18:30 in evening block."
+                    change_rationale = f"Missed '{p.name}' rescheduled to {comp_slot} in evening block."
                     break
 
             if not found:
