@@ -7,10 +7,11 @@ import hashlib
 import bcrypt
 from typing import Dict, Any, List, Optional
 
-DB_PATH = os.path.join(os.path.dirname(__file__), "..", "..", "dinacharya.db")
+DB_PATH = os.getenv("DINACHARYA_DB_PATH") or os.getenv("DATABASE_PATH") or os.path.join(os.path.dirname(__file__), "..", "..", "dinacharya.db")
 
 def get_db_connection():
-    conn = sqlite3.connect(DB_PATH)
+    path = os.getenv("DINACHARYA_DB_PATH") or os.getenv("DATABASE_PATH") or DB_PATH
+    conn = sqlite3.connect(path)
     conn.row_factory = sqlite3.Row
     return conn
 
@@ -133,6 +134,26 @@ def init_db():
         )
     ''')
     c.execute('CREATE INDEX IF NOT EXISTS idx_completions_user_date ON completions(user_id, completion_date)')
+    
+    # Schedule proposals table (canonical state for active proposals)
+    c.execute('''
+        CREATE TABLE IF NOT EXISTS schedule_proposals (
+            proposal_id TEXT PRIMARY KEY,
+            user_id INTEGER NOT NULL,
+            target_practice TEXT NOT NULL,
+            original_time_slot TEXT NOT NULL,
+            proposed_time_slot TEXT NOT NULL,
+            target_block TEXT NOT NULL,
+            schedule_version REAL NOT NULL,
+            status TEXT NOT NULL,
+            proposal_data TEXT NOT NULL,
+            created_at REAL NOT NULL,
+            updated_at REAL NOT NULL,
+            FOREIGN KEY (user_id) REFERENCES users (id)
+        )
+    ''')
+    c.execute('CREATE INDEX IF NOT EXISTS idx_proposals_user_status ON schedule_proposals(user_id, status)')
+    c.execute('CREATE INDEX IF NOT EXISTS idx_proposals_created ON schedule_proposals(created_at)')
     
     conn.commit()
     conn.close()
@@ -555,6 +576,126 @@ def get_user_push_status(user_id: int) -> Dict[str, Any]:
         "enabled": count > 0,
         "subscription_count": count
     }
+
+
+# --- Schedule Proposal Methods ---
+
+def save_schedule_proposal(proposal: Dict[str, Any]) -> str:
+    """
+    Persists a canonical schedule proposal into SQLite.
+    If another pending proposal exists for this user, marks it replaced/stale.
+    """
+    conn = get_db_connection()
+    c = conn.cursor()
+    uid = int(proposal["user_id"])
+    now = time.time()
+    
+    # Supersede older pending proposals for this user
+    c.execute(
+        "UPDATE schedule_proposals SET status = 'superseded', updated_at = ? WHERE user_id = ? AND status = 'pending_user_confirmation'",
+        (now, uid)
+    )
+    
+    p_id = proposal["proposal_id"]
+    p_data = json.dumps(proposal)
+    c.execute('''
+        INSERT OR REPLACE INTO schedule_proposals 
+        (proposal_id, user_id, target_practice, original_time_slot, proposed_time_slot, target_block, schedule_version, status, proposal_data, created_at, updated_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    ''', (
+        p_id,
+        uid,
+        proposal.get("target_practice", ""),
+        proposal.get("original_time_slot", ""),
+        proposal.get("proposed_time_slot", ""),
+        proposal.get("target_block", "morning_block"),
+        float(proposal.get("schedule_version", 0.0)),
+        proposal.get("status", "pending_user_confirmation"),
+        p_data,
+        proposal.get("created_at", now),
+        now
+    ))
+    conn.commit()
+    conn.close()
+    return p_id
+
+
+def get_schedule_proposal(proposal_id: str) -> Optional[Dict[str, Any]]:
+    """
+    Retrieves a proposal by its unique ID.
+    """
+    conn = get_db_connection()
+    c = conn.cursor()
+    c.execute("SELECT proposal_data, status, schedule_version FROM schedule_proposals WHERE proposal_id = ?", (proposal_id,))
+    row = c.fetchone()
+    conn.close()
+    if not row:
+        return None
+    try:
+        data = json.loads(row["proposal_data"])
+        data["status"] = row["status"]
+        data["schedule_version"] = row["schedule_version"]
+        pid = data.get("proposal_id") or data.get("id") or row["proposal_id"]
+        data["proposal_id"] = pid
+        data["id"] = pid
+        return data
+    except Exception:
+        return None
+
+
+def get_pending_proposal(user_id: int) -> Optional[Dict[str, Any]]:
+    """
+    Retrieves the most recent pending proposal for a user.
+    """
+    conn = get_db_connection()
+    c = conn.cursor()
+    c.execute(
+        "SELECT proposal_id, proposal_data, status, schedule_version FROM schedule_proposals WHERE user_id = ? AND status = 'pending_user_confirmation' ORDER BY created_at DESC LIMIT 1",
+        (user_id,)
+    )
+    row = c.fetchone()
+    conn.close()
+    if not row:
+        return None
+    try:
+        data = json.loads(row["proposal_data"])
+        data["status"] = row["status"]
+        data["schedule_version"] = row["schedule_version"]
+        pid = data.get("proposal_id") or data.get("id") or row["proposal_id"]
+        data["proposal_id"] = pid
+        data["id"] = pid
+        return data
+    except Exception:
+        return None
+
+
+def update_proposal_status(proposal_id: str, status: str) -> bool:
+    """
+    Updates the confirmation status of a proposal (e.g. applied, rejected, stale, failed).
+    """
+    conn = get_db_connection()
+    c = conn.cursor()
+    c.execute(
+        "UPDATE schedule_proposals SET status = ?, updated_at = ? WHERE proposal_id = ?",
+        (status, time.time(), proposal_id)
+    )
+    affected = c.rowcount
+    
+    # Also update the embedded JSON status
+    c.execute("SELECT proposal_data FROM schedule_proposals WHERE proposal_id = ?", (proposal_id,))
+    row = c.fetchone()
+    if row and row["proposal_data"]:
+        try:
+            d = json.loads(row["proposal_data"])
+            d["status"] = status
+            c.execute("UPDATE schedule_proposals SET proposal_data = ? WHERE proposal_id = ?", (json.dumps(d), proposal_id))
+        except Exception:
+            pass
+            
+    conn.commit()
+    conn.close()
+    return affected > 0
+
 
 # Initialize on import
 init_db()

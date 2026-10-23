@@ -54,6 +54,9 @@ def compute_rag_item_metrics(
 
     if not is_answerable:
         # Edge case 2: Unanswerable / out-of-scope queries
+        requires_abs = query_item.get("requires_abstention", False)
+        requires_clar = query_item.get("requires_clarification", False)
+
         if num_retrieved == 0:
             retrieval_abstention_correct = True
             concept_leakage = False
@@ -64,21 +67,30 @@ def compute_rag_item_metrics(
             stopwords = {"what", "when", "where", "which", "does", "about", "with", "this", "that", "from", "into"}
             query_terms = [w for w in re.findall(r"\b[a-z]{4,}\b", query_item.get("query", "").lower()) if w not in stopwords]
             leakage_candidates = list(expected_concepts) if expected_concepts else query_terms
-            concept_leakage = any(
-                any(bool(re.search(r"\b" + re.escape(c) + r"\b", d.get("text", ""), re.I)) for c in leakage_candidates)
-                for d in top_docs
-            ) if leakage_candidates else False
+
+            # Concept leakage applies to unanswerable queries requiring abstention (e.g. out-of-domain distractors),
+            # not in-domain ambiguous queries requiring clarification.
+            if requires_abs:
+                concept_leakage = any(
+                    any(bool(re.search(r"\b" + re.escape(c) + r"\b", d.get("text", ""), re.I)) for c in leakage_candidates)
+                    for d in top_docs
+                ) if leakage_candidates else False
+            else:
+                concept_leakage = False
 
             # Distance threshold ALONE does not suffice: concept leakage invalidates abstention
-            requires_abs = query_item.get("requires_abstention", False) or query_item.get("requires_clarification", False)
             if concept_leakage:
                 retrieval_abstention_correct = False
+            elif requires_abs:
+                retrieval_abstention_correct = (min_dist >= 0.65) or (min_dist >= 0.50)
+            elif requires_clar:
+                retrieval_abstention_correct = True
             else:
-                retrieval_abstention_correct = (min_dist >= 0.65) or (requires_abs and min_dist >= 0.50)
+                retrieval_abstention_correct = (min_dist >= 0.65)
 
         hit_at_k = 0
         precision_at_k = 1.0 if num_retrieved == 0 else 0.0
-        recall_at_k = 1.0 if (retrieval_abstention_correct and query_item.get("requires_abstention", False)) else 0.0
+        recall_at_k = 1.0 if (retrieval_abstention_correct and requires_abs) else 0.0
         mrr = 0.0
         abstention_correct = retrieval_abstention_correct
     else:
