@@ -17,7 +17,8 @@ from src.database import db
 from src.models import (
     UserAuthRequest, AuthResponse, QuestionnaireRequest,
     ScheduleGenerateRequest, AdherenceLogRequest, ChatRequest,
-    DoshaProfile, UserContext, Practice, DinacharyaSchedule
+    DoshaProfile, UserContext, Practice, DinacharyaSchedule,
+    ProposalActionRequest, ScheduleProposal
 )
 from src.perception.dosha_mapper import DoshaMapper
 from src.behavior.tracker import AdherenceTracker
@@ -493,44 +494,73 @@ def chat_assistant(request: ChatRequest, user_id: int = Depends(get_current_user
         p_names_all = [p.get("name", "") if isinstance(p, dict) else p.name for p in all_practices]
 
         from src.planning.agent import extract_practice_time_updates, standardize_slot
+        from src.planning.schedule_service import (
+            resolve_practice_intent,
+            formulate_canonical_proposal,
+            apply_canonical_proposal,
+            discard_canonical_proposal
+        )
         precheck_eval = None
-        if not is_acceptance and not is_rejection and not is_insistence_on_rejected and p_names_all:
-            user_requested_updates = extract_practice_time_updates(request.message, p_names_all)
-            if not user_requested_updates:
-                # Check if user mentioned a generic practice keyword (e.g. "pranayama", "bath", "massage", "exercise", "dinner")
-                # that might not yet be in p_names_all or is a substring
-                generic_candidates = ["Pranayama", "Abhyanga", "Snana (Bath)", "Vyayama (Exercise)", "Light Early Dinner", "Mitahara", "Trataka"]
-                user_requested_updates = extract_practice_time_updates(request.message, p_names_all + generic_candidates)
-            if not user_requested_updates and has_time_in_msg and db_history:
-                # Counter-proposal follow-up (e.g. "No, I would like 9:00 PM" where the practice name was in a prior turn)
-                prev_act = None
-                for turn in reversed(db_history):
-                    t_content = turn.get("content", "")
-                    prev_updates = extract_practice_time_updates(t_content, p_names_all)
-                    if prev_updates:
-                        prev_act = next(iter(prev_updates.keys()))
-                        break
-                    for cand_p in p_names_all:
-                        if cand_p and cand_p.lower() in t_content.lower():
-                            prev_act = cand_p
-                            break
-                    if prev_act:
-                        break
-                if prev_act:
-                    synthetic_line = f"Move {prev_act} to {request.message}"
-                    user_requested_updates = extract_practice_time_updates(synthetic_line, [prev_act])
+        active_proposal = None
+        active_proposed_schedule = None
 
-            if user_requested_updates:
-                req_act, req_slot = next(iter(user_requested_updates.items()))
-                precheck_eval = ClinicalRuleEngine.evaluate_reschedule_request(
-                    activity_name=req_act,
-                    proposed_slot=req_slot,
+        if not is_acceptance and not is_rejection and not is_insistence_on_rejected and cached_sched:
+            intent = resolve_practice_intent(request.message, cached_sched)
+            if intent:
+                prop_form = formulate_canonical_proposal(
+                    user_id=user_id,
+                    target_practice=intent["target_practice"],
+                    requested_slot=intent["requested_slot"],
                     current_schedule=cached_sched,
                     profile=profile,
                     symptoms=symptoms_list,
-                    use_llm=False,
                     user_message=request.message
                 )
+                active_proposal = prop_form["proposal"]
+                active_proposed_schedule = prop_form["proposed_schedule"]
+                precheck_eval = prop_form["eval_res"]
+            elif p_names_all:
+                user_requested_updates = extract_practice_time_updates(request.message, p_names_all)
+                if not user_requested_updates:
+                    # Check if user mentioned a generic practice keyword (e.g. "pranayama", "bath", "massage", "exercise", "dinner")
+                    # that might not yet be in p_names_all or is a substring
+                    generic_candidates = ["Pranayama", "Abhyanga", "Snana (Bath)", "Vyayama (Exercise)", "Light Early Dinner", "Mitahara", "Trataka"]
+                    user_requested_updates = extract_practice_time_updates(request.message, p_names_all + generic_candidates)
+                if not user_requested_updates and has_time_in_msg and db_history:
+                    # Counter-proposal follow-up (e.g. "No, I would like 9:00 PM" where the practice name was in a prior turn)
+                    prev_act = None
+                    for turn in reversed(db_history):
+                        t_content = turn.get("content", "")
+                        prev_updates = extract_practice_time_updates(t_content, p_names_all)
+                        if prev_updates:
+                            prev_act = next(iter(prev_updates.keys()))
+                            break
+                        for cand_p in p_names_all:
+                            if cand_p and cand_p.lower() in t_content.lower():
+                                prev_act = cand_p
+                                break
+                        if prev_act:
+                            break
+                    if prev_act:
+                        synthetic_line = f"Move {prev_act} to {request.message}"
+                        user_requested_updates = extract_practice_time_updates(synthetic_line, [prev_act])
+
+                if user_requested_updates:
+                    req_act, req_slot = next(iter(user_requested_updates.items()))
+                    prop_form = formulate_canonical_proposal(
+                        user_id=user_id,
+                        target_practice=req_act,
+                        requested_slot=req_slot,
+                        current_schedule=cached_sched,
+                        profile=profile,
+                        symptoms=symptoms_list,
+                        user_message=request.message
+                    )
+                    active_proposal = prop_form["proposal"]
+                    active_proposed_schedule = prop_form["proposed_schedule"]
+                    precheck_eval = prop_form["eval_res"]
+
+            if precheck_eval:
                 for cit in precheck_eval.get("retrieved_citations", []):
                     guidelines_text += f"\n- [{cit['source']}] {cit['excerpt']}"
 
@@ -627,8 +657,13 @@ def chat_assistant(request: ChatRequest, user_id: int = Depends(get_current_user
                 "timestamp": time.time()
             }
 
-        # Rejection handling: leave schedule untouched
-        if is_rejection and last_assistant_msg:
+        # Rejection handling: leave schedule untouched and discard pending proposal if any
+        if is_rejection:
+            pending_prop = db.get_pending_proposal(user_id)
+            if pending_prop:
+                pid = pending_prop.get("proposal_id") or pending_prop.get("id")
+                if pid:
+                    discard_canonical_proposal(user_id=user_id, proposal_id=pid)
             reject_text = (
                 "Understood. I have discarded the proposed adjustment. Your daily routine remains completely unchanged "
                 "and preserved in your persistent vault. If you would like to explore a different time slot or adjust another part of your schedule (such as meal timings), please let me know! 🙏"
@@ -636,6 +671,7 @@ def chat_assistant(request: ChatRequest, user_id: int = Depends(get_current_user
             db.save_chat_message(user_id, "assistant", reject_text)
             return {
                 "response": reject_text,
+                "proposal": None,
                 "proposed_schedule": None,
                 "schedule_updated": False,
                 "timestamp": time.time()
@@ -644,44 +680,74 @@ def chat_assistant(request: ChatRequest, user_id: int = Depends(get_current_user
         today_date = datetime.now().strftime('%Y-%m-%d')
         
         # If user is accepting an existing proposal
-        if is_acceptance and cached_sched and isinstance(cached_sched, dict) and "schedule" in cached_sched:
-            from src.planning.schedule_service import mutate_user_schedule
-            
-            updates = {}
-            for turn in reversed(db_history):
-                if turn.get("role") == "assistant":
-                    extracted = extract_practice_time_updates(turn.get("content", ""), p_names_all)
-                    if extracted:
-                        updates = extracted
-                        last_assistant_msg = turn.get("content", "")
-                        break
-            
-            if updates:
-                mut_res = mutate_user_schedule(user_id, updates, date_str=today_date)
-                if mut_res.get("success"):
-                    applied_map = mut_res.get("applied_updates") or updates
+        if is_acceptance:
+            pending_prop = db.get_pending_proposal(user_id)
+            if pending_prop:
+                pid = pending_prop.get("proposal_id") or pending_prop.get("id")
+                apply_res = apply_canonical_proposal(user_id=user_id, proposal_id=pid)
+                if apply_res.get("success"):
                     confirm_text = (
-                        "✓ **Schedule Synchronized**: I have updated your daily routine in your persistent vault. "
-                        + ", ".join([f"**{k}** is now set to **{v}**" for k, v in applied_map.items()])
-                        + ". All other practices and fixed commitments remain preserved. You can view your updated routine now. 🙏"
+                        f"✓ **Schedule Synchronized**: I have updated your daily routine in your persistent vault. "
+                        f"**{pending_prop['target_practice']}** is now set to **{pending_prop['proposed_time_slot']}**. "
+                        f"All other practices and fixed commitments remain preserved. You can view your updated routine now. 🙏"
                     )
                     db.save_chat_message(user_id, "assistant", confirm_text)
                     return {
                         "response": confirm_text,
-                        "proposed_schedule": mut_res["schedule"],
+                        "proposal": apply_res.get("proposal"),
+                        "proposed_schedule": apply_res.get("schedule"),
                         "schedule_updated": True,
                         "timestamp": time.time()
                     }
                 else:
-                    logger.error(f"Failed to persist accepted schedule change for user {user_id}: {mut_res.get('error')}")
-                    fail_text = "I encountered an error persisting your schedule update to the vault. Your routine was not modified. Please try again."
+                    err_msg = apply_res.get("error", "Proposal could not be applied.")
+                    fail_text = f"I could not apply the proposal: {err_msg} Your routine was not modified."
                     db.save_chat_message(user_id, "assistant", fail_text)
                     return {
                         "response": fail_text,
+                        "proposal": None,
                         "proposed_schedule": None,
                         "schedule_updated": False,
                         "timestamp": time.time()
                     }
+            elif cached_sched and isinstance(cached_sched, dict) and "schedule" in cached_sched:
+                from src.planning.schedule_service import mutate_user_schedule
+                updates = {}
+                for turn in reversed(db_history):
+                    if turn.get("role") == "assistant":
+                        extracted = extract_practice_time_updates(turn.get("content", ""), p_names_all)
+                        if extracted:
+                            updates = extracted
+                            last_assistant_msg = turn.get("content", "")
+                            break
+                if updates:
+                    mut_res = mutate_user_schedule(user_id, updates, date_str=today_date)
+                    if mut_res.get("success"):
+                        applied_map = mut_res.get("applied_updates") or updates
+                        confirm_text = (
+                            "✓ **Schedule Synchronized**: I have updated your daily routine in your persistent vault. "
+                            + ", ".join([f"**{k}** is now set to **{v}**" for k, v in applied_map.items()])
+                            + ". All other practices and fixed commitments remain preserved. You can view your updated routine now. 🙏"
+                        )
+                        db.save_chat_message(user_id, "assistant", confirm_text)
+                        return {
+                            "response": confirm_text,
+                            "proposal": None,
+                            "proposed_schedule": mut_res["schedule"],
+                            "schedule_updated": True,
+                            "timestamp": time.time()
+                        }
+                    else:
+                        logger.error(f"Failed to persist accepted schedule change for user {user_id}: {mut_res.get('error')}")
+                        fail_text = "I encountered an error persisting your schedule update to the vault. Your routine was not modified. Please try again."
+                        db.save_chat_message(user_id, "assistant", fail_text)
+                        return {
+                            "response": fail_text,
+                            "proposal": None,
+                            "proposed_schedule": None,
+                            "schedule_updated": False,
+                            "timestamp": time.time()
+                        }
 
         # Priority 0: Execute multi-step native tool calling loop connected to live planner tools
         from src.planning.tools import AVAILABLE_PLANNER_TOOLS, execute_planner_tool
@@ -745,57 +811,44 @@ def chat_assistant(request: ChatRequest, user_id: int = Depends(get_current_user
         proposed_schedule = None
         if schedule_was_updated and fresh_state.get("last_schedule"):
             proposed_schedule = fresh_state["last_schedule"].get("schedule")
+        elif active_proposed_schedule:
+            # Canonical proposal already formulated with validated preview schedule
+            proposed_schedule = active_proposed_schedule
         elif "[RECALIBRATE]" in full_response:
             clean_proposal = full_response.replace("[RECALIBRATE]", "").strip()
             full_response = clean_proposal
             
-            # Fast principle-validated proposal extraction
+            # Formulate canonical proposal from response if not already formulated
             if cached_sched and isinstance(cached_sched, dict) and "schedule" in cached_sched:
                 sched_root = cached_sched["schedule"]
                 updates = extract_practice_time_updates(full_response, p_names_all)
-                # Ensure any extracted update passes principle validation (if invalid, use top recommended alternative)
-                validated_updates = {}
-                for u_act, u_slot in updates.items():
-                    ev = ClinicalRuleEngine.evaluate_reschedule_request(
-                        activity_name=u_act,
-                        proposed_slot=u_slot,
+                if updates:
+                    u_act, u_slot = next(iter(updates.items()))
+                    prop_form = formulate_canonical_proposal(
+                        user_id=user_id,
+                        target_practice=u_act,
+                        requested_slot=u_slot,
                         current_schedule=cached_sched,
                         profile=profile,
                         symptoms=symptoms_list,
-                        use_llm=False
+                        user_message=request.message
                     )
-                    if ev["is_valid"]:
-                        validated_updates[u_act] = ev["proposed_slot"]
-                    elif ev.get("recommended_alternatives"):
-                        validated_updates[u_act] = ev["recommended_alternatives"][0]["proposed_slot"]
+                    active_proposal = prop_form["proposal"]
+                    proposed_schedule = prop_form["proposed_schedule"]
 
-                if validated_updates:
-                    from src.models import DinacharyaSchedule, Practice
-                    def clone_b(raw_items):
-                        out = []
-                        for it in raw_items:
-                            d = it if isinstance(it, dict) else it.model_dump()
-                            nm = d.get("name", "")
-                            sl = validated_updates.get(nm, d.get("time_slot", "Flexible"))
-                            out.append(Practice(
-                                name=nm,
-                                time_slot=standardize_slot(sl),
-                                duration_minutes=int(d.get("duration_minutes", 15)),
-                                description=d.get("description", ""),
-                                rationale=d.get("rationale", "")
-                            ))
-                        return out
-                    cand = DinacharyaSchedule(
-                        user_id=str(user_id),
-                        adherence_score=state.get("adherence_score", 1.0),
-                        routine_complexity=sched_root.get("routine_complexity", "Adaptive"),
-                        morning_block=clone_b(sched_root.get("morning_block", [])),
-                        midday_block=clone_b(sched_root.get("midday_block", [])),
-                        evening_block=clone_b(sched_root.get("evening_block", [])),
-                        timestamp=time.time()
-                    )
-                    val = ClinicalRuleEngine.validate(cand, profile)
-                    proposed_schedule = val.model_dump()
+        if "[RECALIBRATE]" in full_response:
+            full_response = full_response.replace("[RECALIBRATE]", "").strip()
+
+        # Invariant: Assistant prose must accurately describe the structured proposal time
+        if active_proposal:
+            target_p = active_proposal["target_practice"]
+            target_slot = active_proposal["proposed_time_slot"]
+            if target_slot not in full_response:
+                full_response += (
+                    f"\n\nI recommend scheduling **{target_p}** at **{target_slot}**. "
+                    f"Would you like me to confirm and update your daily routine? "
+                    f"(Reply **Yes** to accept, or **No** to keep your current schedule.)"
+                )
 
         db.save_chat_message(user_id, "assistant", full_response)
         t_total = time.perf_counter() - t_start
@@ -807,6 +860,7 @@ def chat_assistant(request: ChatRequest, user_id: int = Depends(get_current_user
         
         return {
             "response": full_response, 
+            "proposal": active_proposal,
             "proposed_schedule": proposed_schedule,
             "schedule_updated": schedule_was_updated,
             "timestamp": time.time(),
@@ -829,7 +883,9 @@ def chat_assistant(request: ChatRequest, user_id: int = Depends(get_current_user
         )
         return {
             "response": fallback_msg,
+            "proposal": None,
             "proposed_schedule": None,
+            "schedule_updated": False,
             "timestamp": time.time()
         }
 
@@ -1045,12 +1101,73 @@ def adapt_schedule_route(
     return adaptation_result
 
 
+@app.post("/api/schedule/proposal/apply", response_model=Dict[str, Any])
+def apply_schedule_proposal_endpoint(
+    req: ProposalActionRequest,
+    user_id: int = Depends(get_current_user)
+):
+    from src.planning.schedule_service import apply_canonical_proposal
+    res = apply_canonical_proposal(
+        user_id=user_id,
+        proposal_id=req.proposal_id,
+        expected_schedule_version=req.expected_schedule_version
+    )
+    if not res.get("success"):
+        status_code = 400
+        if res.get("code") == "NOT_FOUND":
+            status_code = 404
+        elif res.get("code") == "FORBIDDEN":
+            status_code = 403
+        elif res.get("code") in ["STALE", "STALE_VERSION", "ALREADY_APPLIED", "REJECTED"]:
+            status_code = 409
+        raise HTTPException(status_code=status_code, detail=res.get("error"))
+    return res
+
+
+@app.post("/api/schedule/proposal/discard", response_model=Dict[str, Any])
+def discard_schedule_proposal_endpoint(
+    req: ProposalActionRequest,
+    user_id: int = Depends(get_current_user)
+):
+    from src.planning.schedule_service import discard_canonical_proposal
+    res = discard_canonical_proposal(user_id=user_id, proposal_id=req.proposal_id)
+    if not res.get("success"):
+        status_code = 400
+        if res.get("code") == "NOT_FOUND":
+            status_code = 404
+        elif res.get("code") == "FORBIDDEN":
+            status_code = 403
+        raise HTTPException(status_code=status_code, detail=res.get("error"))
+    return res
+
+
+@app.get("/api/schedule/proposal/pending", response_model=Dict[str, Any])
+def get_pending_proposal_endpoint(user_id: int = Depends(get_current_user)):
+    proposal = db.get_pending_proposal(user_id)
+    return {"proposal": proposal}
+
+
 @app.post("/api/schedule/confirm")
 def confirm_schedule(request: Dict[str, Any], user_id: int = Depends(get_current_user)):
     try:
+        from src.planning.schedule_service import apply_canonical_proposal
+        proposal_id = request.get("proposal_id")
+        if proposal_id:
+            res = apply_canonical_proposal(user_id=user_id, proposal_id=proposal_id)
+            if not res.get("success"):
+                status_code = 400
+                if res.get("code") == "NOT_FOUND":
+                    status_code = 404
+                elif res.get("code") == "FORBIDDEN":
+                    status_code = 403
+                elif res.get("code") in ["STALE", "STALE_VERSION", "ALREADY_APPLIED", "REJECTED"]:
+                    status_code = 409
+                raise HTTPException(status_code=status_code, detail=res.get("error"))
+            return {"status": "success", "schedule": res["schedule"], "proposal": res.get("proposal")}
+
         schedule = request.get("schedule")
         if not schedule or not isinstance(schedule, dict):
-            raise HTTPException(status_code=400, detail="No schedule provided")
+            raise HTTPException(status_code=400, detail="No schedule or proposal_id provided")
         
         today_date = datetime.now().strftime('%Y-%m-%d')
         state = db.get_user_state(user_id)

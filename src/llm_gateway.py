@@ -186,7 +186,7 @@ class LLMGateway:
                             kwargs["tool_choice"] = "auto"
 
                     configured_timeout = float(os.getenv("FALLBACK_LLM_TIMEOUT", "18.0")) if is_fallback else float(os.getenv("PRIMARY_LLM_TIMEOUT", "14.0"))
-                    kwargs["timeout"] = max(2.0, min(configured_timeout, remaining_attempt))
+                    kwargs["timeout"] = min(configured_timeout, max(0.5, remaining_attempt))
                     resp = active_client.chat.completions.create(**kwargs)
                     elapsed = time.perf_counter() - start_time
                     choice = resp.choices[0]

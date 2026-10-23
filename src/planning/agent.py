@@ -23,11 +23,14 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("DinacharyaPlanner")
 
 
+HYPHEN_CHARS = r"[-–—‑\u2010-\u2015\u2212]"
+
+
 def standardize_slot(slot_str: str) -> str:
     """Standardizes time slots into strict 24-hour HH:MM - HH:MM format."""
     if not slot_str or not isinstance(slot_str, str):
         return slot_str or "Flexible"
-    parts = re.split(r"\s*(?:-|–|—|to)\s*", slot_str.strip())
+    parts = re.split(rf"\s*(?:{HYPHEN_CHARS}|to)\s*", slot_str.strip())
     if len(parts) == 2:
         def _to_24h(s):
             s = s.strip()
@@ -63,7 +66,7 @@ def extract_practice_time_updates(text: str, practice_names: List[str]) -> Dict[
     if not text:
         return {}
     updates = {}
-    time_slot_regex = r"(?:(?:[01]?\d|2[0-3]):[0-5]\d\s*(?:AM|PM|am|pm)?\s*(?:-|–|—|to)\s*(?:[01]?\d|2[0-3]):[0-5]\d\s*(?:AM|PM|am|pm)?)"
+    time_slot_regex = rf"(?:(?:[01]?\d|2[0-3]):[0-5]\d\s*(?:AM|PM|am|pm)?\s*(?:{HYPHEN_CHARS}|to)\s*(?:[01]?\d|2[0-3]):[0-5]\d\s*(?:AM|PM|am|pm)?)"
     single_time_regex = r"\b((?:[01]?\d|2[0-3]):[0-5]\d\s*(?:AM|PM|am|pm)?|\d{1,2}\s*(?:AM|PM|am|pm))\b"
 
     negative_markers = [
@@ -95,11 +98,18 @@ def extract_practice_time_updates(text: str, practice_names: List[str]) -> Dict[
         fallback_slot = None
 
         for raw_line in text.split("\n"):
+            # Strip dosha kala windows (e.g. Kapha Kala (06:00-10:00)) which are biological clocks, not practice slots
+            line = re.sub(
+                rf"(?:\b(?:Kapha|Pitta|Vata)\s+Kala\s*)?\(\s*\d{{1,2}}:\d{{2}}\s*(?:{HYPHEN_CHARS}|to)\s*\d{{1,2}}:\d{{2}}\s*\)",
+                "",
+                raw_line,
+                flags=re.IGNORECASE,
+            )
             # Strip parenthetical rationale clauses that reference adjacent meals/practices (e.g. "(... before 'Light Early Dinner' (19:00 - 19:30))")
             line = re.sub(
                 r"\([^()\n]*(?:before|after|stomach|digestion|conflict|overlap)[^()\n]*(?:\([^()\n]*\)[^()\n]*)*\)",
                 "",
-                raw_line,
+                line,
                 flags=re.IGNORECASE,
             )
             # Also strip clauses starting with "Alternatively," so secondary suggestions don't overwrite the primary recommendation
@@ -107,10 +117,16 @@ def extract_practice_time_updates(text: str, practice_names: List[str]) -> Dict[
 
             if not re.search(pattern, line, re.IGNORECASE):
                 continue
-            # Strip 'from <old_time_or_slot> to ' transition prefixes so 'from 6:30 AM to 7:30 PM'
-            # or 'from 19:00 - 19:30 to 20:00' extracts the target time ('7:30 PM' / '20:00') rather than the old time
+
+            # Check if this practice is only mentioned as a reference anchor (e.g. "after your Nadi Shodhana Pranayama")
+            ref_check = re.search(r"(?:\bafter|\bbefore|\bprior to|\bfollowing)\s+(?:your\s+)?" + f"({pattern})", line, re.IGNORECASE)
+            if ref_check and not re.search(r"\b(?:propose|move|shift|update|reschedule|recommend)\s+(?:moving\s+)?[\*\_]*" + f"({pattern})", line, re.IGNORECASE):
+                continue
+
+            # Strip 'from <old_time_or_slot> to ' transition prefixes (including markdown asterisks) so
+            # 'from **07:00 – 07:20** to **06:45 – 07:05**' extracts the target time ('06:45 – 07:05')
             line_clean = re.sub(
-                r"\bfrom\s+(?:(?:[01]?\d|2[0-3]):[0-5]\d|\d{1,2})(?:\s*(?:AM|PM|am|pm))?(?:\s*(?:-|–|—)\s*(?:[01]?\d|2[0-3]):[0-5]\d(?:\s*(?:AM|PM|am|pm))?)?\s+to\s+",
+                rf"\bfrom\s+[\*\_]*(?:(?:[01]?\d|2[0-3]):[0-5]\d|\d{{1,2}})(?:\s*(?:AM|PM|am|pm))?(?:\s*(?:{HYPHEN_CHARS})\s*(?:[01]?\d|2[0-3]):[0-5]\d(?:\s*(?:AM|PM|am|pm))?)?[\*\_]*\s+to\s+",
                 "to ",
                 line,
                 flags=re.IGNORECASE,
@@ -118,18 +134,19 @@ def extract_practice_time_updates(text: str, practice_names: List[str]) -> Dict[
             line_lower = line_clean.lower()
             slots = re.findall(time_slot_regex, line_clean)
             if slots:
-                # Guard against a 'to' phrase spanning > 120 minutes (e.g. '6:30 AM to 7:30 PM')
+                # Guard against phrases spanning > 120 minutes (e.g. '06:00 - 10:00' or '6:30 AM to 7:30 PM')
                 from src.safety.guardrails import _parse_slot_minutes, _format_minutes_to_slot
                 valid_slots = []
                 for raw_s in slots:
                     std_s = standardize_slot(raw_s)
                     parsed_s = _parse_slot_minutes(std_s, 15)
-                    if parsed_s and (parsed_s[1] - parsed_s[0]) > 120 and re.search(r"\bto\b", raw_s, re.IGNORECASE):
-                        rhs = re.split(r"\bto\b", raw_s, flags=re.IGNORECASE)[-1].strip()
-                        rhs_parsed = _parse_slot_minutes(rhs, 15)
-                        if rhs_parsed:
-                            valid_slots.append(_format_minutes_to_slot(rhs_parsed[0], rhs_parsed[1]))
-                    else:
+                    if parsed_s and (parsed_s[1] - parsed_s[0]) > 120:
+                        if re.search(r"\bto\b", raw_s, re.IGNORECASE):
+                            rhs = re.split(r"\bto\b", raw_s, flags=re.IGNORECASE)[-1].strip()
+                            rhs_parsed = _parse_slot_minutes(rhs, 15)
+                            if rhs_parsed and (rhs_parsed[1] - rhs_parsed[0]) <= 120:
+                                valid_slots.append(_format_minutes_to_slot(rhs_parsed[0], rhs_parsed[1]))
+                    elif parsed_s:
                         valid_slots.append(std_s)
                 slots = valid_slots
             if not slots:
@@ -144,7 +161,9 @@ def extract_practice_time_updates(text: str, practice_names: List[str]) -> Dict[
             if not slots:
                 continue
 
-            candidate = standardize_slot(slots[-1])
+            # Prioritize target slot following 'to' or 'instead'
+            to_target = re.search(r"\bto\s+[\*\_]*(" + time_slot_regex + r")", line_clean, re.IGNORECASE)
+            candidate = standardize_slot(to_target.group(1)) if to_target else standardize_slot(slots[-1])
             has_neg = any(neg in line_lower for neg in negative_markers)
             has_pos = any(pos in line_lower for pos in positive_markers)
 
@@ -211,6 +230,26 @@ def _apply_principle_validated_updates(
                     )
                     state["refinement_logs"].append(log_msg)
                     logger.info(log_msg)
+
+    # Perform canonical cross-block relocation and chronological sorting
+    from src.safety.guardrails import get_destination_block, _parse_slot_minutes
+    all_p = state["morning_block"] + state["midday_block"] + state["evening_block"]
+    reblocked = {"morning_block": [], "midday_block": [], "evening_block": []}
+    seen = set()
+    for p in all_p:
+        k = p.name.lower().strip()
+        if k in seen:
+            continue
+        seen.add(k)
+        dest = get_destination_block(p.time_slot, fallback_block="morning_block")
+        reblocked[dest].append(p)
+
+    for b in ["morning_block", "midday_block", "evening_block"]:
+        def _sort_key(item: Practice):
+            parsed = _parse_slot_minutes(item.time_slot, item.duration_minutes)
+            return (parsed[0] if parsed else 9999, item.name)
+        reblocked[b].sort(key=_sort_key)
+        state[b] = reblocked[b]
 
 
 # Define State for our LangGraph planner

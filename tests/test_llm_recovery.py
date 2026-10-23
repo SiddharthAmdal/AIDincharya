@@ -672,3 +672,63 @@ def test_gateway_tool_calls_compatibility():
     )
     assert res.tool_calls == [mock_tool_call]
     assert res.reasoning_content == "Checking knowledge base first"
+
+
+def test_gateway_respects_small_remaining_deadline_budget(monkeypatch):
+    """
+    Verify LLMGateway passes the actual remaining deadline budget (e.g., 1.2s)
+    to the client timeout without artificially inflating it to a 2.0s floor.
+    """
+    gateway = LLMGateway()
+    mock_client = MagicMock()
+    mock_choice = MagicMock()
+    mock_choice.message.content = "Budget response"
+    mock_choice.message.reasoning_content = None
+    mock_choice.message.tool_calls = None
+    mock_resp = MagicMock()
+    mock_resp.choices = [mock_choice]
+    mock_resp.usage.prompt_tokens = 10
+    mock_resp.usage.completion_tokens = 5
+    mock_client.chat.completions.create.return_value = mock_resp
+    gateway.client = mock_client
+
+    # Mock time.perf_counter so total_deadline is start + 1.2s, remaining is exactly 1.2s
+    fake_time = 100.0
+    def fake_perf_counter():
+        nonlocal fake_time
+        return fake_time
+
+    monkeypatch.setattr(time, "perf_counter", fake_perf_counter)
+    monkeypatch.setenv("GATEWAY_TOTAL_TIMEOUT", "1.2")
+
+    res = gateway.create_chat_completion(
+        messages=[{"role": "user", "content": "Quick query"}],
+        retries_per_model=1
+    )
+    assert res.content == "Budget response"
+    assert mock_client.chat.completions.create.call_count == 1
+    passed_timeout = mock_client.chat.completions.create.call_args.kwargs["timeout"]
+    assert round(passed_timeout, 2) == 1.2, f"Expected timeout of 1.2s, got {passed_timeout}"
+
+
+def test_gateway_deadline_exhaustion_halts_retries_immediately(monkeypatch):
+    """
+    Verify that when the gateway total deadline has <= 1.0s remaining before an attempt,
+    retries halt immediately without dispatching any downstream client calls.
+    """
+    gateway = LLMGateway()
+    mock_client = MagicMock()
+    gateway.client = mock_client
+
+    # Total timeout <= 1.0s triggers immediate deadline budget exhaustion
+    monkeypatch.setenv("GATEWAY_TOTAL_TIMEOUT", "0.8")
+
+    with pytest.raises(RuntimeError, match="All LLM models and retries exhausted"):
+        gateway.create_chat_completion(
+            messages=[{"role": "user", "content": "Should not run"}],
+            retries_per_model=2
+        )
+
+    # Client must NOT have been called because budget was exhausted before attempt
+    assert mock_client.chat.completions.create.call_count == 0
+

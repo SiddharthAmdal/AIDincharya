@@ -105,3 +105,26 @@ class AdherenceLogRequest(BaseModel):
 class ChatRequest(BaseModel):
     message: str
     chat_history: Optional[List[Dict[str, str]]] = []
+
+
+class ScheduleProposal(BaseModel):
+    proposal_id: str = Field(..., description="Unique proposal identifier")
+    user_id: str = Field(..., description="User ID")
+    target_practice: str = Field(..., description="Canonical name of target practice")
+    original_time_slot: str = Field(..., description="Original assigned time slot")
+    proposed_time_slot: str = Field(..., description="Proposed new time slot")
+    target_block: str = Field(..., description="Schedule block: morning_block, midday_block, or evening_block")
+    schedule_version: float = Field(default=0.0, description="Schedule timestamp/version when proposal was created")
+    status: str = Field(default="pending_user_confirmation", description="Status: pending_user_confirmation, accepted, applied, rejected, stale, failed")
+    rationale: str = Field(default="", description="Clinical or lifestyle reason for proposal")
+    clinical_explanation: str = Field(default="", description="Ayurvedic / Yogic constraint explanation")
+    violated_principles: List[str] = Field(default_factory=list, description="List of violated principles if contraindicated")
+    recommended_alternatives: List[Dict[str, Any]] = Field(default_factory=list, description="Safe alternative slots")
+    is_valid: bool = Field(default=True, description="Whether the proposed slot is clinically valid")
+    created_at: float = Field(default=0.0, description="Creation timestamp")
+
+
+class ProposalActionRequest(BaseModel):
+    proposal_id: str = Field(..., description="ID of the proposal to act on")
+    expected_schedule_version: Optional[float] = Field(default=None, description="Expected schedule version to guard against stale updates")
+

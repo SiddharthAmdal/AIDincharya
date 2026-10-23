@@ -247,13 +247,19 @@ def test_runner_cli_nonzero_exit_code_on_degraded_baseline(tmp_path):
 def test_optional_live_agent_evaluation(eval_engine):
     """
     Optional live-model evaluation against active LLM provider.
-    Runs only when explicitly opted in (pytest -m live_eval).
+    Runs only when explicitly opted in (pytest -m live_eval with RUN_LIVE_EVAL=1).
     """
     if os.getenv("RUN_LIVE_EVAL") != "1":
         pytest.skip("Live evaluation skipped: set RUN_LIVE_EVAL=1 to enable live model tests")
-    
+
     res = eval_engine.evaluate_agent(use_live_model=True)
     assert res["passed"] is True
+    assert "live_evaluation" in res
+    assert res["live_evaluation"]["live_status"] == "SUCCESS"
+    assert res["live_evaluation"]["scenarios_passed"] == 6
+    assert res["live_evaluation"]["pass_rate"] == 1.0
+    assert res["live_evaluation"]["fallbacks_observed"] == 0
+    assert res["live_evaluation"]["database_integrity_verified"] is True
 
 
 # =====================================================================

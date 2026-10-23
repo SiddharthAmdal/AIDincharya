@@ -131,6 +131,29 @@ def print_human_readable_summary(report: Dict[str, Any]):
         for k, v in summary.items():
             print(f"    - {k:<32}: {v}")
 
+    # Live Evaluation Results Section (if present)
+    if "agent" in groups and "live_evaluation" in groups["agent"]:
+        live_data = groups["agent"]["live_evaluation"]
+        print("\n" + "=" * 65)
+        print(" 🚀 LIVE END-TO-END CHAT AGENT EVALUATION (NVIDIA NIM)")
+        print("=" * 65)
+        print(f" Live Status       : {live_data.get('live_status')}")
+        print(f" Primary Model     : {live_data.get('primary_model_used', 'unknown')}")
+        print(f" Scenarios Tested  : {live_data.get('scenarios_evaluated')}")
+        print(f" Scenarios Passed  : {live_data.get('scenarios_passed')}")
+        print(f" Pass Rate         : {live_data.get('pass_rate', 0.0) * 100:.1f}%")
+        print(f" Fallbacks Count   : {live_data.get('fallbacks_observed')}")
+        print(f" DB Integrity Sync : {'VERIFIED' if live_data.get('database_integrity_verified') else 'UNVERIFIED'}")
+        print("-" * 65)
+        for sc in live_data.get("scenarios", []):
+            sc_status = "✓ PASS" if sc.get("passed") else "✗ FAIL"
+            print(f" [{sc_status}] {sc['scenario_id']}: {sc.get('title', sc.get('action'))}")
+            print(f"       Model   : {sc.get('model_used')} (fallback: {sc.get('is_fallback')}) | Latency: {sc.get('latency_seconds')}s")
+            print(f"       DB Sync : {sc.get('db_side_effects_verified')}")
+            if sc.get("notes"):
+                print(f"       Notes   : {sc.get('notes')[:120]}")
+        print("=" * 65)
+
     print("\n" + "=" * 65)
     if all_passed:
         print(" 🎯 OVERALL BENCHMARK VERDICT: PASS (All Hard Gates Satisfied)")
@@ -200,6 +223,7 @@ def main():
             "run_id": f"agent_{int(time.time())}",
             "timestamp": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
             "dataset_version": args.dataset_version,
+            "mode": "live" if args.live else "deterministic",
             "overall_passed": res["passed"],
             "elapsed_seconds": 0.0,
             "groups": {"agent": res}
@@ -210,6 +234,7 @@ def main():
             "run_id": f"safety_{int(time.time())}",
             "timestamp": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
             "dataset_version": args.dataset_version,
+            "mode": "live" if args.live else "deterministic",
             "overall_passed": res["passed"],
             "elapsed_seconds": 0.0,
             "groups": {"safety": res}

@@ -65,6 +65,66 @@ def _format_minutes_to_slot(start_min: int, end_min: int) -> str:
     return f"{st // 60:02d}:{st % 60:02d} - {en // 60:02d}:{en % 60:02d}"
 
 
+def get_destination_block(slot_str: str, fallback_block: str = "morning_block") -> str:
+    """
+    Authoritative canonical function for determining the destination schedule block
+    from a validated time slot:
+    - morning_block: Sunrise to Midday practices (start_min < 12 * 60, i.e. 04:00 to 11:59)
+    - midday_block: Midday to Sunset practices (12 * 60 <= start_min < 17 * 60, i.e. 12:00 to 16:59)
+    - evening_block: Sunset to Sleep practices (start_min >= 17 * 60, i.e. 17:00 onwards, or night winddown < 04:00)
+    """
+    if not slot_str or str(slot_str).strip().lower() in ("flexible", "anytime", ""):
+        return fallback_block
+
+    parsed = _parse_slot_minutes(str(slot_str), 15)
+    if not parsed:
+        return fallback_block
+
+    start_min, _ = parsed
+    if 240 <= start_min < 720:
+        return "morning_block"
+    elif 720 <= start_min < 1020:
+        return "midday_block"
+    else:
+        return "evening_block"
+
+
+def reblock_schedule_practices(schedule: DinacharyaSchedule) -> DinacharyaSchedule:
+    """
+    Ensures every practice in a DinacharyaSchedule is in its canonical destination block
+    based on its time_slot, deduplicated, and sorted chronologically.
+    """
+    all_practices: List[Tuple[str, Practice]] = (
+        [("morning_block", p) for p in (schedule.morning_block or [])] +
+        [("midday_block", p) for p in (schedule.midday_block or [])] +
+        [("evening_block", p) for p in (schedule.evening_block or [])]
+    )
+    new_blocks: Dict[str, List[Practice]] = {
+        "morning_block": [],
+        "midday_block": [],
+        "evening_block": []
+    }
+    seen = set()
+    for orig_blk, p in all_practices:
+        key = p.name.strip().lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        dest = get_destination_block(p.time_slot, fallback_block=orig_blk)
+        new_blocks[dest].append(p)
+
+    for b in ["morning_block", "midday_block", "evening_block"]:
+        def _sort_key(item: Practice) -> Tuple[int, str]:
+            parsed = _parse_slot_minutes(item.time_slot, item.duration_minutes)
+            return (parsed[0] if parsed else 9999, item.name)
+        new_blocks[b].sort(key=_sort_key)
+
+    schedule.morning_block = new_blocks["morning_block"]
+    schedule.midday_block = new_blocks["midday_block"]
+    schedule.evening_block = new_blocks["evening_block"]
+    return schedule
+
+
 def _classify_practice_category(name: str, description: str = "") -> str:
     """
     Classifies any practice into one of the physiological Dinacharya categories
@@ -308,6 +368,9 @@ class ClinicalRuleEngine:
         # Ensures that Pranayama, Vyayama, Abhyanga, or Snana are never left immediately after a meal
         temporal_overrides = ClinicalRuleEngine._enforce_post_meal_spacing_on_schedule(schedule)
         overrides_applied.extend(temporal_overrides)
+
+        # Re-assign blocks to guarantee canonical destination block membership and sorting
+        schedule = reblock_schedule_practices(schedule)
 
         return {
             "schedule": schedule,

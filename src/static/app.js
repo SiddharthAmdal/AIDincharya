@@ -597,7 +597,8 @@ function createTypingIndicator() {
 }
 
 // --- Recalibration Flowchart ---
-async function showRecalibrationFlowchart(proposedSchedule) {
+// --- Recalibration Flowchart & Canonical Proposal Card ---
+async function showRecalibrationFlowchart(proposedSchedule, proposal = null) {
     const chatHistory = document.getElementById('reasoning-chat-history');
     if (!chatHistory) return;
     
@@ -606,15 +607,58 @@ async function showRecalibrationFlowchart(proposedSchedule) {
     analyzingDiv.innerHTML = `<div class="flex flex-col items-center gap-4"><span class="material-symbols-outlined text-4xl planning-pulse">hub</span><p class="font-bold text-primary tracking-widest uppercase text-xs">Planner Agent: recalibrating temporal nodes...</p></div>`;
     chatHistory.appendChild(analyzingDiv);
     chatHistory.scrollTop = chatHistory.scrollHeight;
-    await new Promise(r => setTimeout(r, 1500));
+    await new Promise(r => setTimeout(r, 1200));
     analyzingDiv.remove();
 
+    const targetPractice = proposal ? proposal.target_practice : null;
+    const origSlot = proposal ? (proposal.original_time_slot || 'Flexible') : null;
+    const proposedSlot = proposal ? proposal.proposed_time_slot : null;
+    const rationale = proposal ? (proposal.rationale || '') : '';
+    const explanation = proposal ? (proposal.clinical_explanation || '') : '';
+
     const flowDiv = document.createElement('div');
-    flowDiv.className = 'w-full max-w-2xl mx-auto my-10 p-10 glass-card bg-surface-container-low/40 border border-primary/20 rounded-[2.5rem] shadow-2xl animate-fade-in relative overflow-hidden';
+    flowDiv.className = 'w-full max-w-2xl mx-auto my-10 p-8 glass-card bg-surface-container-low/40 border border-primary/20 rounded-[2.5rem] shadow-2xl animate-fade-in relative overflow-hidden';
+    
+    let proposalHeaderHtml = '';
+    if (proposal) {
+        proposalHeaderHtml = `
+            <div id="canonical-proposal-card" class="mb-8 p-6 bg-white/95 rounded-3xl border border-primary/25 shadow-lg">
+                <div class="flex items-center justify-between mb-4">
+                    <span class="text-xs uppercase font-extrabold tracking-wider text-primary flex items-center gap-1.5">
+                        <span class="material-symbols-outlined text-sm">schedule_send</span>
+                        Canonical Schedule Proposal
+                    </span>
+                    <span id="proposal-status-badge" class="px-3 py-1 rounded-full text-xs font-bold bg-amber-100 text-amber-900 border border-amber-300">
+                        Pending Confirmation
+                    </span>
+                </div>
+                <div class="grid grid-cols-1 sm:grid-cols-2 gap-4 mb-4">
+                    <div class="p-3 bg-surface-container-low/70 rounded-2xl border border-outline/10">
+                        <p class="text-[11px] text-on-surface-variant font-medium uppercase tracking-wider">Practice</p>
+                        <p class="font-bold text-lg text-on-surface mt-0.5">${targetPractice}</p>
+                    </div>
+                    <div class="p-3 bg-surface-container-low/70 rounded-2xl border border-outline/10">
+                        <p class="text-[11px] text-on-surface-variant font-medium uppercase tracking-wider">Time Slot Shift</p>
+                        <div class="flex items-center gap-2 mt-1">
+                            <span class="line-through text-slate-400 font-semibold text-sm">${origSlot}</span>
+                            <span class="material-symbols-outlined text-xs text-primary">arrow_forward</span>
+                            <span class="text-primary font-bold text-lg bg-primary/10 px-2 py-0.5 rounded-lg border border-primary/20">${proposedSlot}</span>
+                        </div>
+                    </div>
+                </div>
+                ${rationale ? `<div class="mb-2 text-sm text-on-surface"><span class="font-bold text-primary">Recommendation:</span> ${rationale}</div>` : ''}
+                ${explanation ? `<div class="text-xs text-on-surface-variant bg-primary/5 p-3 rounded-xl border border-primary/10 mt-2 leading-relaxed"><span class="font-bold text-primary">Constraint & Safety:</span> ${explanation}</div>` : ''}
+                <div id="proposal-error-banner" class="hidden mt-3 p-3 bg-error/10 border border-error/30 text-error rounded-xl text-xs font-semibold"></div>
+            </div>
+        `;
+    }
+
     flowDiv.innerHTML = `<div class="absolute top-0 left-0 w-full h-1 bg-gradient-to-r from-primary/0 via-primary/40 to-primary/0"></div>
-        <h3 class="font-headline-md text-primary mb-8 text-center italic">Temporal Recalibration Protocol</h3>
+        <h3 class="font-headline-md text-primary mb-6 text-center italic">Temporal Recalibration Protocol</h3>
+        ${proposalHeaderHtml}
+        <p class="text-xs font-bold text-on-surface-variant uppercase tracking-wider mb-4 px-2">Proposed Schedule Preview</p>
         <div class="space-y-0" id="flowchart-nodes-container"></div>
-        <div id="recalc-actions" class="mt-10 flex gap-4 opacity-0 transition-opacity duration-700">
+        <div id="recalc-actions" class="mt-8 flex gap-4 opacity-0 transition-opacity duration-700">
             <button id="cancel-recalc" class="flex-1 py-4 border-2 border-outline/20 rounded-2xl font-bold hover:bg-surface-variant/50 transition-all">Keep Current</button>
             <button id="confirm-recalc" class="flex-1 py-4 bg-primary text-on-primary rounded-2xl font-bold shadow-xl hover:scale-[1.02] active:scale-95 transition-all">Apply & Synchronize</button>
         </div>`;
@@ -629,10 +673,23 @@ async function showRecalibrationFlowchart(proposedSchedule) {
     
     for (let i = 0; i < allNewTasks.length; i++) {
         const task = allNewTasks[i];
+        const isModifiedTarget = targetPractice && (
+            task.name === targetPractice || 
+            task.name.toLowerCase().includes(targetPractice.toLowerCase()) || 
+            targetPractice.toLowerCase().includes(task.name.toLowerCase())
+        );
+
         const node = document.createElement('div');
-        node.className = 'flowchart-node p-5 bg-white shadow-md rounded-2xl mb-2 flex justify-between items-center border border-primary/5';
         node.style.animationDelay = `${i * 100}ms`;
-        node.innerHTML = `<div><p class="font-label-sm text-[10px] text-primary font-black uppercase tracking-tighter mb-1">${task.time_slot}</p><p class="font-bold text-on-surface text-lg">${task.name}</p></div><span class="material-symbols-outlined text-secondary fill">update</span>`;
+        
+        if (isModifiedTarget) {
+            node.className = 'flowchart-node p-5 bg-primary/10 ring-2 ring-primary rounded-2xl mb-2 flex justify-between items-center border border-primary/30 shadow-md';
+            node.innerHTML = `<div><p class="font-label-sm text-[11px] text-primary font-black uppercase tracking-wider mb-1"><span class="line-through opacity-50 mr-1.5">${origSlot}</span> → <span class="bg-primary text-white px-2 py-0.5 rounded">${task.time_slot}</span> <span class="text-[9px] bg-secondary text-on-secondary px-1.5 py-0.5 rounded ml-1 font-bold">PROPOSED</span></p><p class="font-bold text-primary text-lg">${task.name}</p></div><span class="material-symbols-outlined text-primary fill">published_with_changes</span>`;
+        } else {
+            node.className = 'flowchart-node p-5 bg-white shadow-md rounded-2xl mb-2 flex justify-between items-center border border-primary/5';
+            node.innerHTML = `<div><p class="font-label-sm text-[10px] text-primary font-black uppercase tracking-tighter mb-1">${task.time_slot}</p><p class="font-bold text-on-surface text-lg">${task.name}</p></div><span class="material-symbols-outlined text-secondary fill">update</span>`;
+        }
+        
         nodeContainer.appendChild(node);
         if (i < allNewTasks.length - 1) {
             const line = document.createElement('div');
@@ -640,7 +697,7 @@ async function showRecalibrationFlowchart(proposedSchedule) {
             nodeContainer.appendChild(line);
         }
         chatHistory.scrollTop = chatHistory.scrollHeight;
-        if (i < 8) await new Promise(r => setTimeout(r, 150)); 
+        if (i < 8) await new Promise(r => setTimeout(r, 120)); 
     }
 
     setTimeout(() => { flowDiv.querySelector('#recalc-actions').classList.replace('opacity-0', 'opacity-100'); }, 300);
@@ -649,25 +706,100 @@ async function showRecalibrationFlowchart(proposedSchedule) {
     return new Promise((resolve) => {
         const confirmBtn = document.getElementById('confirm-recalc');
         const cancelBtn = document.getElementById('cancel-recalc');
+        const statusBadge = document.getElementById('proposal-status-badge');
+        const errorBanner = document.getElementById('proposal-error-banner');
+
         if (confirmBtn) confirmBtn.onclick = async () => {
-            flowDiv.innerHTML = `<div class="p-12 text-center animate-pulse text-primary font-bold tracking-widest uppercase">Relaying Approval to Planner Agent...</div>`;
-            const res = await authenticatedFetch(`${API_BASE}/schedule/confirm`, { method: 'POST', body: JSON.stringify({ schedule: proposedSchedule }) });
-            if (res && res.ok) { 
-                flowDiv.remove(); 
-                sessionStorage.removeItem('schedule_cache'); 
-                sessionStorage.setItem('schedule_cache', JSON.stringify({ 
-                    data: { schedule: proposedSchedule }, 
-                    timestamp: Date.now() 
-                }));
-                showToast("✓ Vault Synchronized."); 
-                loadDashboardData(); loadRoutineData();
-                resolve(true); 
+            confirmBtn.disabled = true;
+            cancelBtn.disabled = true;
+            confirmBtn.innerHTML = `<span class="animate-pulse">Synchronizing...</span>`;
+
+            let res;
+            if (proposal && proposal.proposal_id) {
+                res = await authenticatedFetch(`${API_BASE}/schedule/proposal/apply`, {
+                    method: 'POST',
+                    body: JSON.stringify({
+                        proposal_id: proposal.proposal_id,
+                        expected_schedule_version: proposal.schedule_version
+                    })
+                });
             } else {
-                showToast("Sync failed.");
-                resolve(false);
+                res = await authenticatedFetch(`${API_BASE}/schedule/confirm`, {
+                    method: 'POST',
+                    body: JSON.stringify({ schedule: proposedSchedule })
+                });
+            }
+
+            if (res && res.ok) {
+                const resData = await res.json();
+                const savedSchedule = resData.schedule || proposedSchedule;
+
+                if (statusBadge) {
+                    statusBadge.className = 'px-3 py-1 rounded-full text-xs font-bold bg-emerald-100 text-emerald-900 border border-emerald-300';
+                    statusBadge.innerText = '✓ Synchronized & Locked';
+                }
+
+                sessionStorage.removeItem('schedule_cache');
+                sessionStorage.setItem('schedule_cache', JSON.stringify({
+                    data: { schedule: savedSchedule },
+                    timestamp: Date.now()
+                }));
+
+                showToast(`✓ Vault Synchronized${targetPractice ? ': ' + targetPractice : ''}.`);
+                loadDashboardData();
+                loadRoutineData();
+
+                setTimeout(() => {
+                    flowDiv.remove();
+                    resolve(true);
+                }, 1200);
+            } else {
+                let errorMsg = "Synchronization could not be completed.";
+                try {
+                    const errJson = await res.json();
+                    if (errJson && errJson.detail) errorMsg = errJson.detail;
+                } catch(e) {}
+
+                if (statusBadge) {
+                    statusBadge.className = 'px-3 py-1 rounded-full text-xs font-bold bg-rose-100 text-rose-900 border border-rose-300';
+                    statusBadge.innerText = 'Sync Failed / Stale';
+                }
+
+                if (errorBanner) {
+                    errorBanner.innerText = `Change not applied: ${errorMsg}. Your existing schedule remains safely preserved.`;
+                    errorBanner.classList.remove('hidden');
+                }
+
+                showToast(`Sync rejected: ${errorMsg}`);
+                confirmBtn.style.display = 'none';
+                cancelBtn.disabled = false;
+                cancelBtn.innerText = 'Dismiss (Keep Current)';
+                cancelBtn.onclick = () => { flowDiv.remove(); resolve(false); };
             }
         };
-        if (cancelBtn) cancelBtn.onclick = () => { flowDiv.remove(); resolve(false); };
+
+        if (cancelBtn) cancelBtn.onclick = async () => {
+            cancelBtn.disabled = true;
+            if (confirmBtn) confirmBtn.disabled = true;
+
+            if (proposal && proposal.proposal_id) {
+                await authenticatedFetch(`${API_BASE}/schedule/proposal/discard`, {
+                    method: 'POST',
+                    body: JSON.stringify({ proposal_id: proposal.proposal_id })
+                }).catch(() => {});
+            }
+
+            if (statusBadge) {
+                statusBadge.className = 'px-3 py-1 rounded-full text-xs font-bold bg-slate-100 text-slate-800 border border-slate-300';
+                statusBadge.innerText = 'Discarded (Current Kept)';
+            }
+
+            showToast("Proposal discarded. Schedule unchanged.");
+            setTimeout(() => {
+                flowDiv.remove();
+                resolve(false);
+            }, 600);
+        };
     });
 }
 
@@ -945,10 +1077,10 @@ async function loadInsightsData() {
                         showToast("✓ Vault Synchronized.");
                         loadDashboardData();
                         loadRoutineData();
-                    } else if (chatData.proposed_schedule) {
-                        const accepted = await showRecalibrationFlowchart(chatData.proposed_schedule);
+                    } else if (chatData.proposal || chatData.proposed_schedule) {
+                        const accepted = await showRecalibrationFlowchart(chatData.proposed_schedule, chatData.proposal);
                         if (accepted) { 
-                            await typeMessage(chatHistory, "Approval relayed to Planner Agent. Your vault is now synchronized."); 
+                            await typeMessage(chatHistory, "✓ Approval confirmed and persisted to your daily routine vault."); 
                             sessionStorage.removeItem('schedule_cache');
                             loadDashboardData();
                             loadRoutineData(); 
