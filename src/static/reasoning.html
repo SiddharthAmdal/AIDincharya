@@ -138,6 +138,133 @@
             background: #c1c8c1;
             border-radius: 10px;
         }
+
+        /* Structured Chat Typography & Formatting */
+        .chat-message-content {
+            font-size: 0.95rem;
+            line-height: 1.65;
+            color: inherit;
+        }
+        .chat-message-content h2,
+        .chat-message-content h3,
+        .chat-message-content h4,
+        .chat-message-content h5 {
+            font-family: 'Playfair Display', Georgia, serif;
+            letter-spacing: -0.01em;
+            margin-top: 1rem;
+            margin-bottom: 0.4rem;
+        }
+        .chat-message-content h2:first-child,
+        .chat-message-content h3:first-child,
+        .chat-message-content h4:first-child,
+        .chat-message-content h5:first-child {
+            margin-top: 0;
+        }
+        .chat-message-content ul,
+        .chat-message-content ol {
+            margin: 0.65rem 0;
+            padding-left: 1.35rem;
+        }
+        .chat-message-content li {
+            margin-bottom: 0.35rem;
+            line-height: 1.55;
+        }
+        .chat-message-content li:last-child {
+            margin-bottom: 0;
+        }
+        .chat-message-content blockquote {
+            border-left: 3px solid #526442;
+            background: rgba(210, 230, 188, 0.25);
+            padding: 0.6rem 0.9rem;
+            margin: 0.75rem 0;
+            border-radius: 0 0.5rem 0.5rem 0;
+            font-style: italic;
+            color: #414943;
+        }
+        .chat-message-content strong {
+            font-weight: 600;
+            color: #093421;
+        }
+        .chat-message-content em {
+            font-style: italic;
+            color: #526442;
+        }
+        .chat-message-content code {
+            font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+            background: #f0eded;
+            color: #093421;
+            padding: 0.15rem 0.4rem;
+            border-radius: 0.375rem;
+            font-size: 0.85em;
+            border: 1px solid rgba(193, 200, 193, 0.4);
+        }
+        .chat-callout-card {
+            background: rgba(210, 230, 188, 0.35);
+            border: 1px solid rgba(82, 100, 66, 0.25);
+            border-radius: 0.75rem;
+            padding: 0.65rem 0.85rem;
+            margin: 0.65rem 0;
+        }
+        .chat-user-message {
+            color: #ffffff !important;
+        }
+        .chat-user-message strong {
+            color: #ffffff !important;
+            font-weight: 700;
+        }
+        .chat-user-message em {
+            color: #d5e9bf !important;
+        }
+
+        /* Structured Chat Table Formatting */
+        .chat-table-wrapper {
+            margin: 1rem 0;
+            overflow-x: auto;
+            border-radius: 0.85rem;
+            border: 1px solid rgba(193, 200, 193, 0.45);
+            background: #ffffff;
+            box-shadow: 0 1px 4px rgba(0, 0, 0, 0.04);
+            -webkit-overflow-scrolling: touch;
+        }
+        .chat-table-wrapper table {
+            width: 100%;
+            min-width: 540px;
+            border-collapse: collapse;
+            font-size: 0.875rem;
+            text-align: left;
+        }
+        .chat-table-wrapper thead {
+            background: #f0eded;
+            border-bottom: 2px solid rgba(193, 200, 193, 0.6);
+        }
+        .chat-table-wrapper th {
+            padding: 0.75rem 0.95rem;
+            font-weight: 700;
+            color: #093421;
+            font-family: 'Inter', system-ui, sans-serif;
+            letter-spacing: 0.02em;
+            white-space: nowrap;
+        }
+        .chat-table-wrapper tbody tr {
+            border-bottom: 1px solid rgba(193, 200, 193, 0.22);
+            transition: background 0.15s ease;
+        }
+        .chat-table-wrapper tbody tr:last-child {
+            border-bottom: none;
+        }
+        .chat-table-wrapper tbody tr:hover {
+            background: rgba(240, 237, 237, 0.45);
+        }
+        .chat-table-wrapper td {
+            padding: 0.7rem 0.95rem;
+            line-height: 1.5;
+            color: #1b1c1c;
+            vertical-align: top;
+        }
+        .chat-table-wrapper td:first-child,
+        .chat-table-wrapper th:first-child {
+            font-weight: 600;
+        }
     </style>
 </head>
 <body class="bg-surface text-on-surface font-body-md selection:bg-primary-fixed selection:text-on-primary-fixed overflow-hidden">

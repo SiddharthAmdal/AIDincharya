@@ -526,13 +526,177 @@ function showToast(m) {
     setTimeout(() => { t.style.opacity = '0'; t.style.transform = 'translateY(20px)'; setTimeout(() => t.remove(), 400); }, 3500);
 }
 
-function formatAIText(text) {
+function formatUserText(text) {
     if (!text) return "";
     return text
-        .replace(/\*\*(.*?)\*\*/g, '<span class="font-bold text-secondary">$1</span>')
-        .replace(/^### (.*)/gm, '<h3 class="font-bold text-primary text-lg mt-4 mb-2">$1</h3>')
-        .replace(/^- (.*)/gm, '<li class="ml-4 list-disc mb-1">$1</li>')
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
         .replace(/\n/g, '<br>');
+}
+
+function parseMarkdownTable(tableBlock) {
+    const lines = tableBlock.trim().split('\n').map(l => l.trim()).filter(Boolean);
+    if (lines.length < 2) return tableBlock;
+
+    // Locate the separator row (e.g. |---|---| or |--|--|)
+    let separatorIndex = -1;
+    for (let i = 0; i < Math.min(lines.length, 3); i++) {
+        const cleaned = lines[i].replace(/^\||\|$/g, '').trim();
+        const parts = cleaned.split('|').map(p => p.trim());
+        if (parts.length > 0 && parts.every(p => /^:?-+:?$/.test(p))) {
+            separatorIndex = i;
+            break;
+        }
+    }
+
+    if (separatorIndex === -1) {
+        return tableBlock;
+    }
+
+    // Determine column alignments from separator
+    const sepLine = lines[separatorIndex].replace(/^\||\|$/g, '').trim();
+    const alignments = sepLine.split('|').map(p => {
+        p = p.trim();
+        const left = p.startsWith(':');
+        const right = p.endsWith(':');
+        if (left && right) return 'center';
+        if (right) return 'right';
+        return 'left';
+    });
+
+    const headerLines = lines.slice(0, separatorIndex);
+    const bodyLines = lines.slice(separatorIndex + 1);
+
+    const splitRow = (line) => {
+        let clean = line.trim();
+        if (clean.startsWith('|')) clean = clean.substring(1);
+        if (clean.endsWith('|')) clean = clean.substring(0, clean.length - 1);
+        return clean.split('|').map(c => c.trim());
+    };
+
+    let theadHtml = '';
+    if (headerLines.length > 0) {
+        theadHtml = '<thead class="bg-surface-container-high/70 text-primary border-b border-outline-variant/30">';
+        headerLines.forEach(hLine => {
+            let cells = splitRow(hLine);
+            while (cells.length < alignments.length) cells.push('');
+            if (cells.length > alignments.length) cells = cells.slice(0, alignments.length);
+
+            theadHtml += '<tr>';
+            cells.forEach((cell, idx) => {
+                const align = alignments[idx] || 'left';
+                const alignClass = align === 'center' ? 'text-center' : (align === 'right' ? 'text-right' : 'text-left');
+                theadHtml += `<th class="py-2.5 px-3.5 font-bold tracking-wide ${alignClass}">${cell || '&nbsp;'}</th>`;
+            });
+            theadHtml += '</tr>';
+        });
+        theadHtml += '</thead>';
+    }
+
+    let tbodyHtml = '<tbody class="divide-y divide-outline-variant/15 text-on-surface font-normal">';
+    bodyLines.forEach(bLine => {
+        let cells = splitRow(bLine);
+        while (cells.length < alignments.length) cells.push('');
+        if (cells.length > alignments.length) cells = cells.slice(0, alignments.length);
+
+        tbodyHtml += '<tr class="hover:bg-surface-container-low/50 transition-colors">';
+        cells.forEach((cell, idx) => {
+            const align = alignments[idx] || 'left';
+            const alignClass = align === 'center' ? 'text-center' : (align === 'right' ? 'text-right' : 'text-left');
+            tbodyHtml += `<td class="py-2.5 px-3.5 leading-relaxed align-top ${alignClass}">${cell || '&nbsp;'}</td>`;
+        });
+        tbodyHtml += '</tr>';
+    });
+    tbodyHtml += '</tbody>';
+
+    return `<div class="chat-table-wrapper my-4 overflow-x-auto rounded-xl border border-outline-variant/30 shadow-sm bg-white"><table class="min-w-full text-sm border-collapse">${theadHtml}${tbodyHtml}</table></div>`;
+}
+
+function formatAIText(text) {
+    if (!text) return "";
+    
+    // Normalize newlines
+    let src = text.replace(/\r\n/g, '\n').replace(/\r/g, '\n');
+
+    // 1. Escape HTML special characters for safety (preserving markdown syntax)
+    src = src.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+    // Restore markdown blockquote symbol
+    src = src.replace(/^&gt;\s?(.*)$/gm, '> $1');
+
+    // 2. Pre-formatted code blocks ```...```
+    src = src.replace(/```([\s\S]*?)```/g, (m, code) => {
+        return `<pre class="bg-surface-container-highest/80 text-on-surface text-xs p-3 rounded-xl my-2 overflow-x-auto font-mono border border-outline-variant/30"><code>${code.trim()}</code></pre>`;
+    });
+
+    // 3. Inline Code `code`
+    src = src.replace(/`([^`]+)`/g, '<code class="bg-surface-container-high text-primary px-1.5 py-0.5 rounded text-xs font-mono font-medium border border-outline-variant/30">$1</code>');
+
+    // 4. Horizontal Rule
+    src = src.replace(/^---$/gm, '<hr class="my-3 border-outline-variant/30" />');
+
+    // 5. Headings
+    src = src.replace(/^#### (.*$)/gm, '<h5 class="text-xs font-bold uppercase tracking-wider text-secondary mt-3 mb-1">$1</h5>');
+    src = src.replace(/^### (.*$)/gm, '<h4 class="text-base font-bold text-primary mt-3.5 mb-1.5 flex items-center gap-2"><span class="w-1.5 h-1.5 rounded-full bg-secondary inline-block flex-shrink-0"></span><span>$1</span></h4>');
+    src = src.replace(/^## (.*$)/gm, '<h3 class="text-lg font-bold font-headline-md text-primary mt-4 mb-2 pb-1 border-b border-outline-variant/20">$1</h3>');
+    src = src.replace(/^# (.*$)/gm, '<h2 class="text-xl font-bold font-headline-md text-primary mt-4 mb-2 pb-1 border-b border-outline-variant/30">$1</h2>');
+
+    // 6. Blockquotes (> ...)
+    src = src.replace(/(?:^> (?:.*)(?:\n|$))+/gm, (match) => {
+        const lines = match.trim().split('\n').map(l => l.replace(/^> ?/, '')).join('<br>');
+        return `<blockquote class="border-l-4 border-secondary/60 bg-surface-container-low/60 px-4 py-2 my-2.5 rounded-r-xl italic text-on-surface-variant font-serif text-sm">${lines}</blockquote>`;
+    });
+
+    // 7. Bold and Italic
+    src = src.replace(/\*\*(.*?)\*\*/g, '<strong class="font-bold text-primary">$1</strong>');
+    src = src.replace(/__(.*?)__/g, '<strong class="font-bold text-primary">$1</strong>');
+    src = src.replace(/\*(.*?)\*/g, '<em class="italic text-secondary">$1</em>');
+    src = src.replace(/_([^_]+)_/g, '<em class="italic text-secondary">$1</em>');
+
+    // 8. Markdown Tables
+    src = src.replace(/(?:^.*\|.*$\n?)+/gm, (tableBlock) => {
+        if (/\n?\s*\|?(\s*:?-+:?\s*\|)+\s*:?-+:?\s*\|?\s*(?:\n|$)/.test(tableBlock)) {
+            return '\n\n' + parseMarkdownTable(tableBlock) + '\n\n';
+        }
+        return tableBlock;
+    });
+
+    // 9. Ordered Lists (group consecutive numbered items into an <ol>)
+    src = src.replace(/(?:^\d+\.\s+(?:.*)(?:\n|$))+/gm, (match) => {
+        const items = match.trim().split('\n').map(line => {
+            const content = line.replace(/^\d+\.\s+/, '').trim();
+            return `<li class="ml-4 pl-1 mb-1 leading-relaxed">${content}</li>`;
+        }).join('');
+        return `<ol class="list-decimal pl-2 my-2 space-y-1 marker:text-secondary marker:font-semibold">${items}</ol>`;
+    });
+
+    // 10. Unordered Lists (group consecutive bullet items into a <ul>)
+    src = src.replace(/(?:^[-*]\s+(?:.*)(?:\n|$))+/gm, (match) => {
+        const items = match.trim().split('\n').map(line => {
+            const content = line.replace(/^[-*]\s+/, '').trim();
+            return `<li class="ml-4 pl-1 mb-1 leading-relaxed">${content}</li>`;
+        }).join('');
+        return `<ul class="list-disc pl-2 my-2 space-y-1 marker:text-secondary">${items}</ul>`;
+    });
+
+    // 11. Callout Highlights
+    src = src.replace(/^((?:✓|💡|⚠️|Namaste).*?(?:Schedule Synchronized|Synchronized|Vault|Approval confirmed).*)$/gim,
+        '<div class="chat-callout-card flex items-start gap-2.5"><div>$1</div></div>');
+
+    // 12. Paragraphs (split by double newlines)
+    const blocks = src.split(/\n{2,}/);
+    const formattedBlocks = blocks.map(block => {
+        block = block.trim();
+        if (!block) return '';
+        // If block already begins with an HTML block element, don't wrap in <p>
+        if (/^<(h[2-5]|ul|ol|blockquote|pre|hr|div|table)/i.test(block)) {
+            return block;
+        }
+        const inlineBreaks = block.replace(/\n/g, '<br>');
+        return `<p class="mb-2.5 last:mb-0 leading-relaxed">${inlineBreaks}</p>`;
+    });
+
+    return formattedBlocks.filter(Boolean).join('');
 }
 
 // --- Messaging & Animations ---
@@ -540,41 +704,56 @@ function formatAIText(text) {
 async function typeMessage(container, text, role='assistant') {
     if (!container) return;
     const div = document.createElement('div');
-    div.className = `flex gap-4 max-w-3xl ${role === 'user' ? 'ml-auto flex-row-reverse' : ''} message-entrance mb-8`;
-    const icon = role === 'user' ? 'person' : 'psychology_alt';
-    const bg = role === 'user' ? 'bg-primary text-on-primary shadow-lg' : 'bg-white text-on-surface border border-outline-variant/10 shadow-sm';
+    const isUser = role === 'user';
+    div.className = `flex gap-4 max-w-3xl ${isUser ? 'ml-auto flex-row-reverse' : ''} message-entrance mb-8`;
+    const icon = isUser ? 'person' : 'psychology_alt';
+    const bg = isUser ? 'bg-primary text-on-primary shadow-lg' : 'bg-white text-on-surface border border-outline-variant/10 shadow-sm';
     div.innerHTML = `
-        <div class="w-10 h-10 rounded-xl ${role === 'user' ? 'bg-surface-container-highest' : 'bg-primary'} flex items-center justify-center flex-shrink-0 shadow-md">
-            <span class="material-symbols-outlined ${role === 'user' ? 'text-on-surface-variant' : 'text-on-primary'} text-[22px]">${icon}</span>
+        <div class="w-10 h-10 rounded-xl ${isUser ? 'bg-surface-container-highest' : 'bg-primary'} flex items-center justify-center flex-shrink-0 shadow-md">
+            <span class="material-symbols-outlined ${isUser ? 'text-on-surface-variant' : 'text-on-primary'} text-[22px]">${icon}</span>
         </div>
-        <div class="${bg} p-6 rounded-[1.5rem] ${role === 'user' ? 'rounded-tr-none' : 'rounded-tl-none'}">
-            <p class="leading-relaxed text-md"></p>
+        <div class="${bg} p-6 rounded-[1.5rem] ${isUser ? 'rounded-tr-none' : 'rounded-tl-none'} shadow-sm flex-1 min-w-0">
+            <div class="chat-message-content ${isUser ? 'chat-user-message' : ''}"></div>
         </div>
     `;
     container.appendChild(div);
-    const p = div.querySelector('p');
+    const bodyEl = div.querySelector('.chat-message-content');
+
+    if (isUser) {
+        bodyEl.innerHTML = formatUserText(text);
+        container.scrollTop = container.scrollHeight;
+        return;
+    }
+
     const words = text.split(' ');
     let currentText = '';
-    for(let i=0; i<words.length; i++) {
+    const delay = words.length > 80 ? 8 : 14;
+    for (let i = 0; i < words.length; i++) {
         currentText += words[i] + ' ';
-        p.innerHTML = formatAIText(currentText);
+        bodyEl.innerHTML = formatAIText(currentText);
         container.scrollTop = container.scrollHeight;
-        await new Promise(r => setTimeout(r, 15));
+        await new Promise(r => setTimeout(r, delay));
     }
+    // Finalize with complete structured formatting
+    bodyEl.innerHTML = formatAIText(text);
+    container.scrollTop = container.scrollHeight;
 }
 
 async function renderChatMessage(container, role, text) {
     if (!container) return;
     const div = document.createElement('div');
-    div.className = `flex gap-4 max-w-3xl ${role === 'user' ? 'ml-auto flex-row-reverse' : ''} mb-8`;
-    const icon = role === 'user' ? 'person' : 'psychology_alt';
-    const bg = role === 'user' ? 'bg-primary text-on-primary shadow-lg' : 'bg-white text-on-surface border border-outline-variant/10 shadow-sm';
+    const isUser = role === 'user';
+    div.className = `flex gap-4 max-w-3xl ${isUser ? 'ml-auto flex-row-reverse' : ''} mb-8`;
+    const icon = isUser ? 'person' : 'psychology_alt';
+    const bg = isUser ? 'bg-primary text-on-primary shadow-lg' : 'bg-white text-on-surface border border-outline-variant/10 shadow-sm';
     div.innerHTML = `
-        <div class="w-10 h-10 rounded-xl ${role === 'user' ? 'bg-surface-container-highest' : 'bg-primary'} flex items-center justify-center flex-shrink-0 shadow-md">
-            <span class="material-symbols-outlined ${role === 'user' ? 'text-on-surface-variant' : 'text-on-primary'} text-[22px]">${icon}</span>
+        <div class="w-10 h-10 rounded-xl ${isUser ? 'bg-surface-container-highest' : 'bg-primary'} flex items-center justify-center flex-shrink-0 shadow-md">
+            <span class="material-symbols-outlined ${isUser ? 'text-on-surface-variant' : 'text-on-primary'} text-[22px]">${icon}</span>
         </div>
-        <div class="${bg} p-6 rounded-[1.5rem] ${role === 'user' ? 'rounded-tr-none' : 'rounded-tl-none'}">
-            <p class="leading-relaxed text-md">${formatAIText(text)}</p>
+        <div class="${bg} p-6 rounded-[1.5rem] ${isUser ? 'rounded-tr-none' : 'rounded-tl-none'} shadow-sm flex-1 min-w-0">
+            <div class="chat-message-content ${isUser ? 'chat-user-message' : ''}">
+                ${isUser ? formatUserText(text) : formatAIText(text)}
+            </div>
         </div>
     `;
     container.appendChild(div);
@@ -1048,7 +1227,7 @@ async function loadInsightsData() {
             if (data.history && data.history.length > 0) {
                 data.history.forEach(msg => renderChatMessage(chatHistory, msg.role, msg.content));
             } else {
-                await typeMessage(chatHistory, "Welcome to the Reasoning Engine. I am Vaidya AI. I have analyzed your biometrics and assessment data. How can I help you understand your routine logic today?");
+                await typeMessage(chatHistory, "### Welcome to the Reasoning Engine\n\nI am **Vaidya AI**, your Ayurvedic wellness physician. I have analyzed your biometrics, Prakriti/Vikriti assessment, and active daily routine.\n\nHow can I assist you with your routine logic or circadian adjustments today? 🙏");
             }
         }
         if (form) {
@@ -1080,14 +1259,14 @@ async function loadInsightsData() {
                     } else if (chatData.proposal || chatData.proposed_schedule) {
                         const accepted = await showRecalibrationFlowchart(chatData.proposed_schedule, chatData.proposal);
                         if (accepted) { 
-                            await typeMessage(chatHistory, "✓ Approval confirmed and persisted to your daily routine vault."); 
+                            await typeMessage(chatHistory, "### ✓ Schedule Synchronized\n\nYour approval has been confirmed and persisted to your daily routine vault."); 
                             sessionStorage.removeItem('schedule_cache');
                             loadDashboardData();
                             loadRoutineData(); 
                         }
                     }
                 } else {
-                    await typeMessage(chatHistory, "Namaste. I am currently experiencing high network latency connecting to the reasoning cluster. Your routine remains safe and preserved. Please try again shortly. 🙏");
+                    await typeMessage(chatHistory, "### Service Notice\n\nNamaste. I am currently experiencing network latency connecting to the reasoning cluster. Your routine remains safe and preserved. Please try again shortly. 🙏");
                     showToast("Connection timed out. Please retry.");
                 }
             };
