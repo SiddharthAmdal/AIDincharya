@@ -604,16 +604,24 @@ def chat_assistant(request: ChatRequest, user_id: int = Depends(get_current_user
             "AUTHENTIC AYURVEDIC & YOGIC KNOWLEDGE BASE:\n" + guidelines_text +
             precheck_prompt_block +
             "\n\nINSTRUCTIONS & PROTOCOLS:\n"
-            "1. Use Markdown (**bold**, - lists) for clear clinical formatting.\n"
+            "1. STRUCTURE & FORMATTING (Crucial for Dashboard UI Readability):\n"
+            "   - Format all responses using clean, structured Markdown with clear visual hierarchy.\n"
+            "   - When presenting daily routines, comparative timings, or multi-practice overviews, format them with clean Markdown tables (`| Block | Activity | Time-Slot | Duration | Core Ayurvedic Rationale |`) with a proper header and delimiter row (`|---|---|...|`).\n"
+            "   - Use bold section headings (e.g. ### Today's Dinacharya (Daily Routine), ### Clinical Rationale, ### Next Steps) to organize distinct thoughts.\n"
+            "   - Use clean bullet lists (`- `) for actions, guidelines, principles, or comparative timings.\n"
+            "   - Use **bold** for practice names (e.g., **Pranayama**, **Abhyanga**), exact times (e.g., **18:30 – 18:45**), and core Ayurvedic concepts (*Jatharagni*, *Samana Vayu*, *Mitahara*, *Prakriti*).\n"
+            "   - Keep paragraphs brief (1–3 sentences each) and clearly separated.\n"
+            "   - Use classical grounding quotes or notes where appropriate (e.g., `> Ashtanga Hrdayam: ...` or `> Classical Grounding: ...`).\n"
             "2. Reference specific assessment answers, current scheduled tasks, and grounding principles.\n"
             "3. REASONED VALIDATION & ADAPTATION PROTOCOL:\n"
             "   - When a user asks to change, reschedule, move, or adjust an activity time, NEVER blindly agree.\n"
             "   - First inspect the USER'S CURRENT SCHEDULE (especially meal timings like Mitahara and Light Early Dinner, bath, exercise, and sleep) and call `propose_schedule_adaptation` to validate the requested slot against Ayurvedic & Yogic principles (such as the Bhuktavastu / empty-stomach rule requiring 2+ hours after a light meal or 3-4 hours after a main meal before Pranayama, Asana, Vyayama, Abhyanga, or Snana).\n"
-            "   - IF THE REQUESTED TIME PASSES VALIDATION: State clearly: 'I propose moving [Activity Name] from [Old Time] to [New Time]. Would you like me to confirm and update your daily routine? (Reply **Yes** to confirm, or **No** to keep your current schedule.)' and append [RECALIBRATE].\n"
+            "   - IF THE REQUESTED TIME PASSES VALIDATION: State clearly:\n"
+            "     'I propose moving [Activity Name] from [Old Time] to [New Time]. Would you like me to confirm and update your daily routine? (Reply **Yes** to confirm, or **No** to keep your current schedule.)' and append [RECALIBRATE].\n"
             "   - IF THE REQUESTED TIME VIOLATES PRINCIPLES: Do NOT approve the requested time. Explain the physiological reason warmly (e.g., practicing Pranayama or bathing right after a meal disrupts Samana Vayu and Jatharagni during the Kapha stage of digestion), recommend the best conflict-free alternative slot from the validator (e.g., 15-30 mins before dinner or 90-120 mins after dinner), and ask: 'I recommend scheduling [Activity Name] at **[Safe Alternative Time]** instead. Would you like me to confirm and update your daily routine to **[Safe Alternative Time]**? (Reply **Yes** to accept this recommended time, or **No** to keep your current schedule unchanged.)' and append [RECALIBRATE].\n"
             "   - Do NOT claim that the schedule has already been updated, synchronized, or rescheduled. It is ONLY updated after the user explicitly confirms.\n"
             "   - NEVER reschedule or modify unrelated activities (such as Trataka / Reflection) unless the user specifically asked for them.\n"
-            "4. Keep response under 3 concise, empathetic paragraphs."
+            "4. Maintain an empathetic, authoritative, and encouraging clinical tone."
         )
 
         messages = [{"role": "system", "content": system_prompt}]
@@ -643,10 +651,13 @@ def chat_assistant(request: ChatRequest, user_id: int = Depends(get_current_user
         # Hold the clinical safety guardrail firm, explain that the meal itself would need to move first, and keep schedule unchanged
         if is_insistence_on_rejected and last_assistant_msg:
             insist_text = (
+                "### Clinical Safety Notice: Digestive Window\n\n"
                 "I understand your preference for that time window. However, because classical Ayurvedic (*Bhuktavastu* / *Ashtanga Hrdayam*) "
-                "and Ministry of AYUSH guidelines strictly contraindicate practicing Pranayama, Vyayama, Abhyanga, or Snana immediately after a meal "
-                "(to protect *Jatharagni* and *Samana Vayu*), I cannot schedule it directly after your meal. "
-                "Your current daily routine has been kept safe and unchanged. If you would like to shift your meal time earlier so that slot becomes digested and safe, "
+                "and Ministry of AYUSH guidelines strictly contraindicate practicing **Pranayama**, **Vyayama**, **Abhyanga**, or **Snana** immediately after a meal "
+                "(to protect *Jatharagni* and *Samana Vayu*), I cannot schedule it directly after your meal.\n\n"
+                "### Current Status\n"
+                "- Your current daily routine has been kept **safe and unchanged** in your vault.\n"
+                "- If you would like to shift your meal time earlier so that slot becomes digested and safe, "
                 "or choose another empty-stomach window, please let me know! 🙏"
             )
             db.save_chat_message(user_id, "assistant", insist_text)
@@ -665,8 +676,10 @@ def chat_assistant(request: ChatRequest, user_id: int = Depends(get_current_user
                 if pid:
                     discard_canonical_proposal(user_id=user_id, proposal_id=pid)
             reject_text = (
-                "Understood. I have discarded the proposed adjustment. Your daily routine remains completely unchanged "
-                "and preserved in your persistent vault. If you would like to explore a different time slot or adjust another part of your schedule (such as meal timings), please let me know! 🙏"
+                "### Schedule Adjustment Discarded\n\n"
+                "Understood. I have discarded the proposed adjustment.\n\n"
+                "- **Status**: Your daily routine remains **completely unchanged** and preserved in your persistent vault.\n"
+                "- If you would like to explore a different time slot or adjust another part of your schedule (such as meal timings), please let me know! 🙏"
             )
             db.save_chat_message(user_id, "assistant", reject_text)
             return {
@@ -687,9 +700,12 @@ def chat_assistant(request: ChatRequest, user_id: int = Depends(get_current_user
                 apply_res = apply_canonical_proposal(user_id=user_id, proposal_id=pid)
                 if apply_res.get("success"):
                     confirm_text = (
-                        f"✓ **Schedule Synchronized**: I have updated your daily routine in your persistent vault. "
-                        f"**{pending_prop['target_practice']}** is now set to **{pending_prop['proposed_time_slot']}**. "
-                        f"All other practices and fixed commitments remain preserved. You can view your updated routine now. 🙏"
+                        "### ✓ Schedule Synchronized\n\n"
+                        f"I have successfully updated your daily routine in your persistent vault:\n\n"
+                        f"- **Practice**: **{pending_prop['target_practice']}**\n"
+                        f"- **New Time Slot**: **{pending_prop['proposed_time_slot']}**\n"
+                        f"- **Integrity**: All other practices and fixed commitments remain preserved.\n\n"
+                        "You can view your updated routine now in the Daily Routine tab. 🙏"
                     )
                     db.save_chat_message(user_id, "assistant", confirm_text)
                     return {
@@ -724,10 +740,12 @@ def chat_assistant(request: ChatRequest, user_id: int = Depends(get_current_user
                     mut_res = mutate_user_schedule(user_id, updates, date_str=today_date)
                     if mut_res.get("success"):
                         applied_map = mut_res.get("applied_updates") or updates
+                        applied_bullets = "\n".join([f"- **{k}**: now set to **{v}**" for k, v in applied_map.items()])
                         confirm_text = (
-                            "✓ **Schedule Synchronized**: I have updated your daily routine in your persistent vault. "
-                            + ", ".join([f"**{k}** is now set to **{v}**" for k, v in applied_map.items()])
-                            + ". All other practices and fixed commitments remain preserved. You can view your updated routine now. 🙏"
+                            "### ✓ Schedule Synchronized\n\n"
+                            "I have updated your daily routine in your persistent vault:\n\n"
+                            f"{applied_bullets}\n\n"
+                            "All other practices and fixed commitments remain preserved. You can view your updated routine now in the Daily Routine tab. 🙏"
                         )
                         db.save_chat_message(user_id, "assistant", confirm_text)
                         return {
@@ -779,11 +797,15 @@ def chat_assistant(request: ChatRequest, user_id: int = Depends(get_current_user
                 full_response = (
                     f"Namaste. Looking at your current schedule, I cannot recommend scheduling **{precheck_eval['activity_name']}** "
                     f"at **{precheck_eval['proposed_slot']}**.\n\n"
-                    f"**Clinical & Yogic Principle**: {precheck_eval['clinical_explanation']}\n\n"
-                    f"**Recommended Alternative**: I recommend scheduling **{precheck_eval['activity_name']}** at **{best_alt}** instead "
-                    f"({best_alt_why}).{secondary_alt}\n\n"
-                    f"Would you like me to confirm and update your daily routine to **{best_alt}**? "
-                    f"(Reply **Yes** to accept this recommended time, or **No** to keep your current schedule unchanged.) [RECALIBRATE]"
+                    f"### Clinical & Yogic Principle\n"
+                    f"{precheck_eval['clinical_explanation']}\n\n"
+                    f"### Recommended Safe Alternative\n"
+                    f"- **Activity**: **{precheck_eval['activity_name']}**\n"
+                    f"- **Proposed Time Slot**: **{best_alt}** ({best_alt_why}){secondary_alt}\n\n"
+                    f"### Next Steps\n"
+                    f"Would you like me to confirm and update your daily routine to **{best_alt}**?\n"
+                    f"- Reply **Yes** to accept this recommended time.\n"
+                    f"- Reply **No** to keep your current schedule unchanged. [RECALIBRATE]"
                 )
             elif "[RECALIBRATE]" not in full_response:
                 full_response += " [RECALIBRATE]"
@@ -792,15 +814,24 @@ def chat_assistant(request: ChatRequest, user_id: int = Depends(get_current_user
                 full_response = (
                     f"Namaste! Moving **{precheck_eval['activity_name']}** to **{precheck_eval['proposed_slot']}** "
                     f"aligns well with your constitution and maintains proper spacing from your meals.\n\n"
+                    f"### Proposed Schedule Adjustment\n"
+                    f"- **Activity**: **{precheck_eval['activity_name']}**\n"
+                    f"- **New Time Slot**: **{precheck_eval['proposed_slot']}**\n"
+                    f"- **Clinical Status**: Verified against digestive & circadian guidelines.\n\n"
+                    f"### Next Steps\n"
                     f"I propose moving **{precheck_eval['activity_name']}** to **{precheck_eval['proposed_slot']}**. "
-                    f"Would you like me to confirm and update your daily routine? "
-                    f"(Reply **Yes** to confirm, or **No** to keep your current schedule.) [RECALIBRATE]"
+                    f"Would you like me to confirm and update your daily routine?\n"
+                    f"- Reply **Yes** to confirm and apply to your schedule.\n"
+                    f"- Reply **No** to keep your current schedule unchanged. [RECALIBRATE]"
                 )
             else:
                 full_response = (
-                    "Namaste! Based on your constitutional assessment and classical Ayurvedic guidelines, "
-                    "maintaining consistent wake times near Brahma Muhurta, nourishing meals during midday Agni, "
-                    "and restorative evening practices are foundational. How can I help adapt your Dinacharya today? 🙏"
+                    "### Welcome to Vaidya AI Clinical Guidance\n\n"
+                    "Based on your constitutional assessment and classical Ayurvedic principles:\n\n"
+                    "- **Morning Phase**: Maintaining consistent wake times near **Brahma Muhurta**.\n"
+                    "- **Midday Phase**: Prioritizing nourishing meals during peak **Jatharagni**.\n"
+                    "- **Evening Phase**: Engaging in calming, grounding practices before rest.\n\n"
+                    "How can I help adapt your Dinacharya schedule today? 🙏"
                 )
         
         # Check if any tool in the loop successfully mutated the canonical schedule
