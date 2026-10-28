@@ -10,8 +10,9 @@ res = requests.post(f"{BASE_URL}/api/auth/register", json={"username": "testuser
 token = res.json()["token"]
 headers = {"Authorization": f"Bearer {token}"}
 
-print("2. Onboarding...")
-requests.post(f"{BASE_URL}/api/user/questionnaire", json={"responses": {"q1": "vata", "q2": "pitta", "q3": "kapha"}}, headers=headers)
+print("2. Onboarding (24-question assessment)...")
+answers_24 = {f"q{i}": ("vata" if i % 3 == 1 else "pitta" if i % 3 == 2 else "kapha") for i in range(1, 25)}
+requests.post(f"{BASE_URL}/api/user/questionnaire", json={"responses": answers_24}, headers=headers)
 
 print("3. Generating schedule with fever...")
 payload_fever = {

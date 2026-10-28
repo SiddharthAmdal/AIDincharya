@@ -44,6 +44,92 @@ def get_canonical_schedule(user_id: int) -> Optional[Dict[str, Any]]:
     return None
 
 
+def get_stable_practice_id(p: Any) -> str:
+    """Returns or generates a stable immutable identifier for a practice."""
+    if isinstance(p, dict):
+        p_id = p.get("id")
+        p_name = p.get("name") or p.get("activity") or "practice"
+    else:
+        p_id = getattr(p, "id", None)
+        p_name = getattr(p, "name", "practice")
+    if p_id:
+        return re.sub(r'^prac_', '', str(p_id))
+    clean = re.sub(r'[^a-zA-Z0-9]+', '_', p_name.lower()).strip('_')
+    return clean
+
+
+def score_practice_match(
+    p_id: str,
+    p_name: str,
+    p_slot: str,
+    upd_key: str,
+    context_slot: Optional[str] = None
+) -> float:
+    """
+    Scores how well an existing practice matches an update activity identifier.
+    Differentiates practices sharing root terms (e.g. Pranayama Cooling vs Pranayama Balancing).
+    """
+    upd_clean = upd_key.strip().lower()
+    name_clean = p_name.strip().lower()
+    id_clean = p_id.strip().lower()
+
+    # 1. Exact ID match (highest priority)
+    if upd_clean == id_clean:
+        return 1000.0
+
+    # 2. Exact full name match
+    if upd_clean == name_clean:
+        return 500.0
+
+    # 3. Distinguishing tokens
+    # e.g., cooling / sheetali / sitkari vs balancing / breath / samavriti
+    upd_words = set(re.findall(r'\b[a-z0-9]+\b', upd_clean))
+    name_words = set(re.findall(r'\b[a-z0-9]+\b', name_clean))
+
+    distinguishing_pairs = [
+        ({"cooling", "sheetali", "sitkari", "exhalation"}, {"balancing", "breath", "samavriti"}),
+        ({"morning"}, {"evening", "midday", "afternoon"}),
+        ({"balancing", "breath"}, {"cooling", "exhalation"})
+    ]
+
+    for group_a, group_b in distinguishing_pairs:
+        # If update specifically requests terms in group_a, penalize if candidate name has group_b and not group_a
+        if (upd_words & group_a) and (name_words & group_b) and not (name_words & group_a):
+            return -100.0
+        if (upd_words & group_b) and (name_words & group_a) and not (name_words & group_b):
+            return -100.0
+
+    common_words = upd_words & name_words
+    if not common_words:
+        if upd_clean in name_clean or name_clean in upd_clean:
+            common_words = upd_words & set(re.findall(r'\b[a-z0-9]+\b', name_clean))
+        else:
+            return 0.0
+
+    score = 50.0 + len(common_words) * 20.0
+
+    # Check if distinguishing words matched
+    key_differentiators = {"cooling", "exhalation", "balancing", "breath", "morning", "evening"}
+    matched_diff = common_words & key_differentiators
+    score += len(matched_diff) * 100.0
+
+    # Slot proximity bonus if context slot provided
+    if context_slot:
+        try:
+            p_parsed = _parse_slot_minutes(p_slot, 15)
+            c_parsed = _parse_slot_minutes(context_slot, 15)
+            if p_parsed and c_parsed:
+                diff = abs(p_parsed[0] - c_parsed[0])
+                if diff <= 60:
+                    score += 40.0
+                elif diff <= 180:
+                    score += 20.0
+        except Exception:
+            pass
+
+    return score
+
+
 def mutate_user_schedule(
     user_id: int,
     updates: Dict[str, str],
@@ -93,8 +179,6 @@ def mutate_user_schedule(
     for act_name, slot in updates.items():
         norm_updates[act_name.strip().lower()] = standardize_slot(slot)
 
-    matched_practices: List[str] = []
-
     # Gather all existing practices from morning_block, midday_block, evening_block
     all_raw_practices: List[Tuple[str, Dict[str, Any]]] = []
     for blk_name in ["morning_block", "midday_block", "evening_block"]:
@@ -102,39 +186,102 @@ def mutate_user_schedule(
             p_dict = item if isinstance(item, dict) else item.model_dump()
             all_raw_practices.append((blk_name, p_dict))
 
+    # Match each update key to AT MOST ONE distinct practice
+    target_practice_for_update: Dict[str, str] = {}  # upd_k -> matched_p_id
+    assigned_practice_ids = set()
+
+    for upd_k, upd_slot in norm_updates.items():
+        best_p_id = None
+        best_score = 0.0
+        for orig_blk, p_dict in all_raw_practices:
+            p_id = p_dict.get("id") or get_stable_practice_id(p_dict)
+            if p_id in assigned_practice_ids:
+                continue
+            p_name = p_dict.get("name") or p_dict.get("activity") or "Practice"
+            p_slot = p_dict.get("time_slot") or "Flexible"
+            score = score_practice_match(p_id, p_name, p_slot, upd_k)
+            if score > best_score:
+                best_score = score
+                best_p_id = p_id
+
+        if best_p_id and best_score >= 30.0:
+            target_practice_for_update[upd_k] = best_p_id
+            assigned_practice_ids.add(best_p_id)
+
+    # Detect conflicting time slots and return conflict proposal instead of silently moving unrelated activities
+    for upd_k, p_id in target_practice_for_update.items():
+        new_slot = norm_updates[upd_k]
+        target_dict = next((p[1] for p in all_raw_practices if (p[1].get("id") or get_stable_practice_id(p[1])) == p_id), None)
+        if not target_dict:
+            continue
+        target_name = target_dict.get("name", "Practice")
+        target_duration = int(target_dict.get("duration_minutes", 15))
+        n_parsed = _parse_slot_minutes(new_slot, target_duration)
+        if not n_parsed:
+            continue
+        n_start, n_end = n_parsed
+
+        # Check against all other scheduled practices in the schedule
+        for orig_blk, other_dict in all_raw_practices:
+            other_id = other_dict.get("id") or get_stable_practice_id(other_dict)
+            if other_id == p_id:
+                continue
+            # If other practice is also being rescheduled in this mutation, use its new slot, else its current slot
+            other_upd_k = next((k for k, mid in target_practice_for_update.items() if mid == other_id), None)
+            other_slot = norm_updates[other_upd_k] if other_upd_k else (other_dict.get("time_slot") or "Flexible")
+            other_dur = int(other_dict.get("duration_minutes", 15))
+            o_parsed = _parse_slot_minutes(other_slot, other_dur)
+            if not o_parsed:
+                continue
+            o_start, o_end = o_parsed
+
+            # If overlapping time slot detected
+            if n_start < o_end and o_start < n_end:
+                other_name = other_dict.get("name", "Other Practice")
+                logger.warning(
+                    "Schedule conflict detected: '%s' to '%s' conflicts with '%s' at '%s'",
+                    target_name, new_slot, other_name, other_slot
+                )
+                return {
+                    "success": False,
+                    "conflict": True,
+                    "conflicting_activity": other_name,
+                    "conflicting_slot": other_slot,
+                    "requested_activity": target_name,
+                    "requested_slot": new_slot,
+                    "message": f"Time slot conflict: '{target_name}' at '{new_slot}' overlaps with existing practice '{other_name}' ({other_slot})."
+                }
+
     new_blocks: Dict[str, List[Practice]] = {
         "morning_block": [],
         "midday_block": [],
         "evening_block": []
     }
-    seen_canonical_names = set()
+    seen_canonical_ids = set()
+    matched_practices: List[str] = []
 
     for orig_blk, p_dict in all_raw_practices:
-        p_name = p_dict.get("name") or p_dict.get("activity") or "Practice"
-        p_name_lower = p_name.lower().strip()
-
-        # Deduplication safeguard: preserve exactly one instance of each practice
-        if p_name_lower in seen_canonical_names:
+        p_id = p_dict.get("id") or get_stable_practice_id(p_dict)
+        if p_id in seen_canonical_ids:
             continue
-        seen_canonical_names.add(p_name_lower)
+        seen_canonical_ids.add(p_id)
 
-        # Check if this practice is being updated (exact or keyword substring)
-        new_slot = None
-        for upd_k, upd_slot in norm_updates.items():
-            if upd_k == p_name_lower or upd_k in p_name_lower or p_name_lower in upd_k:
-                new_slot = upd_slot
-                if p_name not in matched_practices:
-                    matched_practices.append(p_name)
-                break
+        p_name = p_dict.get("name") or p_dict.get("activity") or "Practice"
 
-        if new_slot:
+        # Check if this specific practice was targeted by an update
+        matching_upd_k = next((k for k, mid in target_practice_for_update.items() if mid == p_id), None)
+        if matching_upd_k:
+            new_slot = norm_updates[matching_upd_k]
             effective_slot = standardize_slot(new_slot)
             dest_block = get_destination_block(effective_slot, fallback_block=orig_blk)
+            if p_name not in matched_practices:
+                matched_practices.append(p_name)
         else:
             effective_slot = standardize_slot(p_dict.get("time_slot") or p_dict.get("time") or "Flexible")
             dest_block = get_destination_block(effective_slot, fallback_block=orig_blk)
 
         practice_obj = Practice(
+            id=p_id,
             name=p_name,
             time_slot=effective_slot,
             duration_minutes=int(p_dict.get("duration_minutes", 15)),
@@ -143,11 +290,31 @@ def mutate_user_schedule(
         )
         new_blocks[dest_block].append(practice_obj)
 
+    # Support adding newly proposed practices not present in existing schedule (e.g. Journaling)
+    for upd_k, upd_slot in norm_updates.items():
+        if upd_k not in target_practice_for_update:
+            effective_slot = standardize_slot(upd_slot)
+            dest_block = get_destination_block(effective_slot, fallback_block="evening_block")
+            new_title = next((k for k in updates.keys() if k.lower().strip() == upd_k), upd_k.title())
+            clean = re.sub(r'[^a-zA-Z0-9]+', '_', new_title.lower()).strip('_')
+            new_id = f"prac_{clean}"
+            new_practice = Practice(
+                id=new_id,
+                name=new_title,
+                time_slot=effective_slot,
+                duration_minutes=15,
+                description=f"Personalized Ayurvedic practice: {new_title}",
+                rationale="Restorative practice supporting mind-body grounding and circadian alignment."
+            )
+            new_blocks[dest_block].append(new_practice)
+            matched_practices.append(new_title)
+
     if not matched_practices:
         return {
             "success": False,
             "error": f"No scheduled practices matched the requested activities: {list(updates.keys())}"
         }
+
 
     for b in ["morning_block", "midday_block", "evening_block"]:
         def _sort_key(item: Practice) -> Tuple[int, str]:
@@ -288,18 +455,20 @@ def resolve_practice_intent(
         "trataka": ["trataka", "candle gazing", "digital sunset"]
     }
 
-    target = None
+    best_target = None
+    best_score = -1.0
     for p in all_practices:
-        p_name_lower = p["name"].lower()
-        if p_name_lower in msg_lower:
-            target = p
-            break
+        p_name = p["name"]
+        p_id = p.get("id") or get_stable_practice_id(p)
+        score = score_practice_match(p_id, p_name, p.get("time_slot", ""), msg_lower)
         for key, syns in practice_synonyms.items():
-            if any(s in msg_lower for s in syns) and any(s in p_name_lower for s in syns):
-                target = p
-                break
-        if target:
-            break
+            if any(s in msg_lower for s in syns) and any(s in p_name.lower() for s in syns):
+                score += 15.0
+        if score > best_score and score > 20.0:
+            best_score = score
+            best_target = p
+
+    target = best_target
 
     if not target:
         return None
@@ -429,15 +598,20 @@ def formulate_canonical_proposal(
     target_block = "morning_block"
     canonical_name = target_practice
 
+    target_p_id = None
+    best_match_score = -1.0
     for blk_name in ["morning_block", "midday_block", "evening_block"]:
         for p in sched_root.get(blk_name, []):
             p_dict = p if isinstance(p, dict) else p.model_dump()
             nm = p_dict.get("name", "")
-            if nm == target_practice or target_practice.lower() in nm.lower() or nm.lower() in target_practice.lower():
+            pid = p_dict.get("id") or get_stable_practice_id(p_dict)
+            sc = score_practice_match(pid, nm, p_dict.get("time_slot", ""), target_practice)
+            if sc > best_match_score:
+                best_match_score = sc
                 canonical_name = nm
+                target_p_id = pid
                 orig_slot = p_dict.get("time_slot", "Flexible")
                 target_block = blk_name
-                break
 
     dest_proposal_block = get_destination_block(proposed_slot, fallback_block=target_block)
     proposal_id = f"prop_{user_id}_{int(time.time())}_{secrets.token_hex(4)}"
@@ -468,17 +642,17 @@ def formulate_canonical_proposal(
         "midday_block": [],
         "evening_block": []
     }
-    seen_preview_names = set()
+    seen_preview_ids = set()
     for blk_name in ["morning_block", "midday_block", "evening_block"]:
         for item in sched_root.get(blk_name, []) or []:
             p_d = item if isinstance(item, dict) else item.model_dump()
             p_nm = p_d.get("name", "Practice")
-            p_nm_lower = p_nm.lower().strip()
-            if p_nm_lower in seen_preview_names:
+            p_id = p_d.get("id") or get_stable_practice_id(p_d)
+            if p_id in seen_preview_ids:
                 continue
-            seen_preview_names.add(p_nm_lower)
+            seen_preview_ids.add(p_id)
 
-            if p_nm == canonical_name or canonical_name.lower() in p_nm_lower or p_nm_lower in canonical_name.lower():
+            if p_id == target_p_id:
                 sl = proposed_slot
                 desc = p_d.get("description", "")
                 rat = f"{p_d.get('rationale', '')} [PROPOSED ADAPTATION: {rationale}]".strip()
@@ -490,6 +664,7 @@ def formulate_canonical_proposal(
                 dest_blk = get_destination_block(sl, fallback_block=blk_name)
 
             preview_blocks[dest_blk].append(Practice(
+                id=p_id,
                 name=p_nm,
                 time_slot=standardize_slot(sl),
                 duration_minutes=int(p_d.get("duration_minutes", 15)),

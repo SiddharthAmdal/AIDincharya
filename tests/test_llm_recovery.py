@@ -35,13 +35,17 @@ client = TestClient(app)
 def mocked_get_current_user():
     return 1
 
-app.dependency_overrides[get_current_user] = mocked_get_current_user
-
 
 @pytest.fixture(autouse=True)
 def ensure_db():
+    orig_override = app.dependency_overrides.get(get_current_user)
     app.dependency_overrides[get_current_user] = mocked_get_current_user
     db.init_db()
+    yield
+    if orig_override is not None:
+        app.dependency_overrides[get_current_user] = orig_override
+    else:
+        app.dependency_overrides.pop(get_current_user, None)
 
 
 def test_chat_null_last_schedule():

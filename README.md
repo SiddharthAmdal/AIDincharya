@@ -109,16 +109,16 @@ flowchart TD
 
 | Subsystem | Implementation Module | Primary Responsibilities | Status |
 | :--- | :--- | :--- | :--- |
-| **Prakriti & Vikriti Perception** | `src/perception/dosha_mapper.py` | Answers-to-dosha scoring, wearable metric ingestion, physiological baseline normalization. | ✅ Production |
-| **Multi-Tier LLM Gateway** | `src/llm_gateway.py` | Transparent multi-provider failover (`nvidia` ➔ `openai` ➔ `gemini`), exponential backoff retries, and timeout recovery. | ✅ Production |
-| **LangGraph Agentic Planner** | `src/planning/agent.py` | Multi-step Plan-and-Execute agent graph with state persistence and calendar conflict resolution. | ✅ Production |
-| **Canonical Schedule Service** | `src/planning/schedule_service.py` | Proposal lifecycle, pending proposal persistence, atomic acceptance/rejection, cross-block practice reblocking. | ✅ Production |
-| **Ayurvedic Clinical Guardrails** | `src/safety/guardrails.py` | 6-category relational temporal constraint matrix, Bhuktavastu post-meal gap verification, fever/illness overrides. | ✅ Production |
-| **Authentic AYUSH RAG Engine** | `src/knowledge/retriever.py` | ChromaDB vector store, `sentence-transformers/all-MiniLM-L6-v2` embeddings, 4 authentic AYUSH PDFs, multi-query expansion. | ✅ Production |
-| **Behavioral Adherence Engine** | `src/behavior/tracker.py` | Habit tracking, adherence scoring, complexity progression (*Anchor* ➔ *Standard* ➔ *Advanced*). | ✅ Production |
-| **Web Push Notifications** | `src/notifications/` | RFC 8292 VAPID encryption, service worker push subscriptions, scheduled background dispatch. | ✅ Production |
-| **Evaluation & Benchmark Suite** | `src/evaluation/` | CLI runner, 5 evaluation groups (RAG, Grounding, Agent, Safety, Schedule), regression testing against `baseline_v1.json`. | ✅ Production |
-| **Interactive Dashboard & SPA** | `src/static/app.js`, `index.html` | Responsive dashboard, live schedule timeline, proposal diff review cards, reasoning inspector, push enablement. | ✅ Production |
+| **Wearable Telemetry & Android Bridge** | `android_bridge/`, `src/perception/wearable_interface.py` | Native Android Health Connect ingestion, continuous Heart Rate, HRV, Sleep Stages, and SpO2 processing. | ✅ Production |
+| **Canonical 4-Layer Step Aggregator** | `src/perception/step_aggregation.py` | Hour-bucketed, source-deduplicated step counts guaranteed consistent across DB, API, and Agent tools. | ✅ Production |
+| **Prakriti & Vikriti Clinical Profiling** | `src/perception/prakriti_questions.py`, `src/perception/dosha_mapper.py` | 15-question constitutional assessment, real-time physiological perturbations tracking. | ✅ Production |
+| **Multi-Tier LLM Gateway & Diagnostics** | `src/llm_gateway.py` | Transparent failover (`NVIDIA NIM` ➔ `OpenAI/GPT-OSS` ➔ `Ayurvedic Offline Fallback`) with latency and error telemetry. | ✅ Production |
+| **LangGraph Agentic Planner** | `src/planning/agent.py`, `src/planning/tools.py` | Multi-step Plan-and-Execute agent graph with wearable tool execution and calendar conflict resolution. | ✅ Production |
+| **Schedule Mutation & Subtype Resolution** | `src/planning/schedule_service.py` | Independent Pranayama subtype mutations (`Cooling` vs `Balancing`), evening slot normalization. | ✅ Production |
+| **Task Lifecycle & Premature Gating** | `src/database/db.py`, `src/static/app.js` | Persistent activity statuses, strict time-window gating preventing premature future task completion. | ✅ Production |
+| **Authoritative Adherence Engine** | `src/behavior/scoring.py`, `src/behavior/tracker.py` | Math-consistent adherence scoring, habit tracking, and complexity progression (*Anchor* ➔ *Advanced*). | ✅ Production |
+| **Authentic AYUSH RAG Engine** | `src/knowledge/retriever.py` | ChromaDB vector store, classical Ayurvedic verse embeddings, multi-query expansion. | ✅ Production |
+| **Interactive Dashboard & Routine View** | `src/static/app.js`, `dashboard.html`, `routine.html` | Real-time biometric cards, timeline routine blocks, locked upcoming task state, and streaming SSE chat. | ✅ Production |
 
 ---
 

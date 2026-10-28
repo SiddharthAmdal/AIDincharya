@@ -38,6 +38,7 @@ class DoshaProfile(BaseModel):
     user_id: str
     prakriti: DoshaVector = Field(..., description="Baseline constitution determined via questionnaire")
     vikriti_flags: VikritiFlags = Field(default_factory=VikritiFlags, description="Dynamic deviations detected from wearables")
+    assessment_status: str = Field(default="completed", description="Assessment state: completed, unassessed, or provisional")
     timestamp: float = Field(..., description="Timestamp of when the profile was generated")
 
 
@@ -56,6 +57,7 @@ class Practice(BaseModel):
     """
     A single Dinacharya practice task.
     """
+    id: Optional[str] = Field(default=None, description="Stable immutable activity identifier")
     name: str = Field(..., description="Name of the Ayurvedic practice (e.g. Abhyanga, Nasya, Pranayama)")
     time_slot: str = Field(..., description="Assigned time range (e.g. 06:00 - 06:15)")
     duration_minutes: int = Field(..., description="Duration of the practice in minutes")
@@ -73,6 +75,7 @@ class DinacharyaSchedule(BaseModel):
     morning_block: List[Practice] = Field(default_factory=list, description="Sunrise to Midday practices")
     midday_block: List[Practice] = Field(default_factory=list, description="Midday to Sunset practices")
     evening_block: List[Practice] = Field(default_factory=list, description="Sunset to Sleep practices")
+    provenance: Optional[Dict[str, Any]] = Field(default=None, description="Planning provenance and decision audit trace")
     timestamp: float = Field(..., description="Timestamp of when the schedule was created")
 
 
@@ -90,7 +93,7 @@ class QuestionnaireRequest(BaseModel):
     responses: Dict[str, str]
 
 class ScheduleGenerateRequest(BaseModel):
-    user_id: str
+    user_id: Optional[str] = None
     questionnaire_responses: Optional[Dict[str, str]] = None
     wearable_telemetry_7d: Optional[Dict[str, float]] = None
     context: UserContext
@@ -98,9 +101,16 @@ class ScheduleGenerateRequest(BaseModel):
 
 
 class AdherenceLogRequest(BaseModel):
-    user_id: str
-    completed_practices: List[str] = Field(..., description="Names of completed practices today")
-    recommended_practices: List[str] = Field(..., description="Names of recommended practices today")
+    user_id: Optional[str] = "current"
+    completed_practices: List[str] = Field(default_factory=list, description="Names of completed practices today")
+    recommended_practices: List[str] = Field(default_factory=list, description="Names of recommended practices today")
+
+
+class ActivityCompleteRequest(BaseModel):
+    activity_id: Optional[str] = None
+    practice_name: Optional[str] = None
+    date: Optional[str] = None
+    allow_early: Optional[bool] = False
 
 class ChatRequest(BaseModel):
     message: str

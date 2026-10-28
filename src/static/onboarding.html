@@ -5,16 +5,22 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Prakriti Assessment | Dinacharya AI</title>
     <script src="https://cdn.tailwindcss.com?plugins=forms"></script>
-    <link href="https://fonts.googleapis.com/css2?family=Playfair+Display:wght@600;700&family=Inter:wght@400;500;600&display=swap" rel="stylesheet">
+    <link href="https://fonts.googleapis.com/css2?family=Playfair+Display:ital,wght@0,600;0,700;1,400&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
     <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:opsz,wght,FILL,GRAD@20..48,100..700,0..1,-50..200" />
     <script>
         tailwind.config = {
             theme: {
                 extend: {
                     colors: {
-                        primary: '#006A60',
+                        primary: '#093421',
+                        'primary-light': '#006A60',
                         'on-primary': '#FFFFFF',
                         surface: '#F4FBF8',
+                        'surface-card': '#FFFFFF',
+                        'secondary': '#526442',
+                        'secondary-container': '#D2E6BC',
+                        'accent-gold': '#D4AF37',
+                        'border-subtle': '#E2E8F0'
                     },
                     fontFamily: {
                         display: ['Playfair Display', 'serif'],
@@ -24,105 +30,694 @@
             }
         }
     </script>
+    <style>
+        .option-card {
+            transition: all 0.2s cubic-bezier(0.16, 1, 0.3, 1);
+        }
+        .option-card:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 4px 14px rgba(9, 52, 33, 0.08);
+        }
+        .option-card.selected {
+            border-color: #006A60;
+            background-color: #F0FDF4;
+            box-shadow: 0 0 0 2px rgba(0, 106, 96, 0.2);
+        }
+        .progress-transition {
+            transition: width 0.4s cubic-bezier(0.4, 0, 0.2, 1);
+        }
+        .fade-in {
+            animation: fadeIn 0.3s ease-in-out forwards;
+        }
+        @keyframes fadeIn {
+            from { opacity: 0; transform: translateY(8px); }
+            to { opacity: 1; transform: translateY(0); }
+        }
+    </style>
 </head>
-<body class="bg-surface text-gray-900 font-body min-h-screen">
-    <nav class="w-full bg-white shadow-sm py-4 px-8 flex items-center gap-3">
-        <div class="w-10 h-10 rounded-full bg-primary flex items-center justify-center text-white">
-            <span class="material-symbols-outlined">spa</span>
+<body class="bg-surface text-gray-900 font-body min-h-screen flex flex-col">
+    <!-- Navbar -->
+    <nav class="w-full bg-white/90 backdrop-blur-md shadow-sm py-4 px-6 md:px-12 flex items-center justify-between sticky top-0 z-50 border-b border-gray-100">
+        <div class="flex items-center gap-3">
+            <div class="w-10 h-10 rounded-full bg-primary flex items-center justify-center text-white shadow-md">
+                <span class="material-symbols-outlined text-xl">spa</span>
+            </div>
+            <div>
+                <h1 class="font-display text-xl font-bold text-primary">Dinacharya AI</h1>
+                <p class="text-[11px] text-gray-500 font-medium">Ayurvedic Circadian Intelligence</p>
+            </div>
         </div>
-        <h1 class="font-display text-2xl font-bold text-primary">Dinacharya AI</h1>
+        <div class="flex items-center gap-3 text-sm">
+            <span id="nav-username" class="hidden md:inline font-medium text-gray-600"></span>
+            <button id="logout-btn" class="text-xs font-semibold text-gray-500 hover:text-red-600 px-3 py-1.5 rounded-lg border border-gray-200 hover:border-red-200 transition-colors">
+                Sign Out
+            </button>
+        </div>
     </nav>
 
-    <main class="max-w-2xl mx-auto py-12 px-6">
-        <div class="text-center mb-10">
-            <h2 class="font-display text-4xl text-primary mb-4">Discover Your Prakriti</h2>
-            <p class="text-gray-600 text-lg">Help us understand your unique mind-body constitution to personalize your daily routine.</p>
+    <!-- Main Content Container -->
+    <main class="flex-1 max-w-3xl w-full mx-auto py-8 md:py-12 px-4 sm:px-6">
+
+        <!-- Assessment Already Completed Card (Hidden by default) -->
+        <div id="already-completed-card" class="hidden bg-white p-8 md:p-10 rounded-3xl shadow-[0_12px_40px_rgb(0,0,0,0.06)] border border-gray-100 text-center fade-in">
+            <div class="w-16 h-16 rounded-full bg-secondary-container/60 text-primary flex items-center justify-center mx-auto mb-6">
+                <span class="material-symbols-outlined text-3xl">verified</span>
+            </div>
+            <h2 class="font-display text-3xl text-primary font-bold mb-2">Prakriti Assessment Complete</h2>
+            <p id="completed-constitution-title" class="text-xl font-medium text-secondary mb-4">Your constitution is recorded in your health vault.</p>
+            <p id="completed-explanation" class="text-gray-600 text-sm max-w-xl mx-auto mb-8 leading-relaxed"></p>
+
+            <!-- Dosha Distribution Badges -->
+            <div id="completed-dosha-badges" class="flex flex-wrap justify-center gap-4 mb-8"></div>
+
+            <div class="flex flex-col sm:flex-row gap-4 justify-center">
+                <a href="/dashboard" class="px-8 py-3.5 bg-primary text-white rounded-xl font-semibold shadow-lg hover:bg-primary/90 transition-all flex items-center justify-center gap-2">
+                    <span>Go to Dashboard</span>
+                    <span class="material-symbols-outlined text-sm">arrow_forward</span>
+                </a>
+                <button id="retake-assessment-btn" class="px-8 py-3.5 bg-white text-gray-700 border border-gray-300 rounded-xl font-semibold hover:bg-gray-50 transition-all flex items-center justify-center gap-2">
+                    <span class="material-symbols-outlined text-sm">refresh</span>
+                    <span>Re-take Assessment</span>
+                </button>
+            </div>
         </div>
 
-        <form id="questionnaire-form" class="space-y-8 bg-white p-8 rounded-3xl shadow-[0_8px_30px_rgb(0,0,0,0.04)] border border-gray-100">
-            <!-- Question 1 -->
-            <div class="space-y-4">
-                <label class="block text-xl font-semibold text-gray-800">1. How would you describe your digestion (Agni)?</label>
-                <div class="space-y-3">
-                    <label class="flex items-center p-4 border border-gray-200 rounded-xl cursor-pointer hover:bg-gray-50 transition-colors">
-                        <input type="radio" name="q_digestion" value="vata" required class="text-primary focus:ring-primary w-5 h-5">
-                        <span class="ml-3 text-gray-700">Irregular, prone to bloating or gas</span>
-                    </label>
-                    <label class="flex items-center p-4 border border-gray-200 rounded-xl cursor-pointer hover:bg-gray-50 transition-colors">
-                        <input type="radio" name="q_digestion" value="pitta" class="text-primary focus:ring-primary w-5 h-5">
-                        <span class="ml-3 text-gray-700">Strong, sharp, prone to acidity if I skip meals</span>
-                    </label>
-                    <label class="flex items-center p-4 border border-gray-200 rounded-xl cursor-pointer hover:bg-gray-50 transition-colors">
-                        <input type="radio" name="q_digestion" value="kapha" class="text-primary focus:ring-primary w-5 h-5">
-                        <span class="ml-3 text-gray-700">Slow, steady, often feel heavy after eating</span>
-                    </label>
+        <!-- Questionnaire Wizard View -->
+        <div id="questionnaire-wizard" class="space-y-6">
+            <!-- Header Banner -->
+            <div class="text-center mb-6">
+                <span class="inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-semibold bg-secondary-container/60 text-primary mb-3">
+                    <span class="material-symbols-outlined text-xs">auto_awesome</span>
+                    Constitutional Phenotype Rubric
+                </span>
+                <h2 class="font-display text-3xl sm:text-4xl text-primary font-bold mb-3">Discover Your Prakriti</h2>
+                <p class="text-gray-600 text-sm sm:text-base max-w-xl mx-auto">
+                    Complete this 24-question Ayurvedic assessment to determine your baseline physical, physiological, and behavioral constitution (Dosha balance).
+                </p>
+            </div>
+
+            <!-- Progress Bar & Section Header -->
+            <div class="bg-white p-5 rounded-2xl shadow-sm border border-gray-100 space-y-3">
+                <div class="flex flex-col sm:flex-row sm:items-center justify-between gap-2 text-xs font-semibold text-gray-600">
+                    <div class="flex items-center gap-2">
+                        <span id="current-section-badge" class="px-2.5 py-1 rounded-md bg-primary-light/10 text-primary-light text-[11px] font-bold">Section A</span>
+                        <span id="current-section-title" class="font-medium text-gray-700">Physical Characteristics</span>
+                    </div>
+                    <div class="flex items-center gap-3">
+                        <span id="progress-question-text" class="text-gray-700">Question 1 of 24</span>
+                        <span id="progress-percent-text" class="font-bold text-primary-light">4%</span>
+                    </div>
+                </div>
+
+                <!-- Progress Track -->
+                <div class="w-full bg-gray-100 rounded-full h-2.5 overflow-hidden">
+                    <div id="progress-fill" class="bg-gradient-to-r from-primary-light to-primary h-2.5 rounded-full progress-transition" style="width: 4.16%;"></div>
+                </div>
+
+                <!-- Section Navigation Pills -->
+                <div class="grid grid-cols-3 gap-2 pt-1 text-[11px] font-semibold text-center">
+                    <div id="sec-tab-A" class="py-1 rounded border border-primary-light bg-primary-light/5 text-primary-light cursor-pointer">Section A: Physical (1–6)</div>
+                    <div id="sec-tab-B" class="py-1 rounded border border-gray-200 text-gray-400 cursor-pointer">Section B: Metabolic (7–16)</div>
+                    <div id="sec-tab-C" class="py-1 rounded border border-gray-200 text-gray-400 cursor-pointer">Section C: Mind (17–24)</div>
                 </div>
             </div>
 
-            <!-- Question 2 -->
-            <div class="space-y-4">
-                <label class="block text-xl font-semibold text-gray-800">2. How is your sleep pattern?</label>
-                <div class="space-y-3">
-                    <label class="flex items-center p-4 border border-gray-200 rounded-xl cursor-pointer hover:bg-gray-50 transition-colors">
-                        <input type="radio" name="q_sleep" value="vata" required class="text-primary focus:ring-primary w-5 h-5">
-                        <span class="ml-3 text-gray-700">Light, easily interrupted, difficult to fall asleep</span>
-                    </label>
-                    <label class="flex items-center p-4 border border-gray-200 rounded-xl cursor-pointer hover:bg-gray-50 transition-colors">
-                        <input type="radio" name="q_sleep" value="pitta" class="text-primary focus:ring-primary w-5 h-5">
-                        <span class="ml-3 text-gray-700">Moderate, but I wake up feeling alert and driven</span>
-                    </label>
-                    <label class="flex items-center p-4 border border-gray-200 rounded-xl cursor-pointer hover:bg-gray-50 transition-colors">
-                        <input type="radio" name="q_sleep" value="kapha" class="text-primary focus:ring-primary w-5 h-5">
-                        <span class="ml-3 text-gray-700">Deep, heavy, hard to wake up in the morning</span>
-                    </label>
+            <!-- Question Card Container -->
+            <div id="question-card" class="bg-white p-6 sm:p-8 rounded-3xl shadow-[0_8px_30px_rgb(0,0,0,0.04)] border border-gray-100 fade-in">
+                <!-- Question Number & Prompt -->
+                <div class="mb-6">
+                    <span id="q-number-pill" class="text-xs font-bold uppercase tracking-wider text-primary-light mb-1.5 block">Question 1</span>
+                    <h3 id="q-text" class="text-xl sm:text-2xl font-display font-bold text-gray-900 leading-snug">
+                        Loading question...
+                    </h3>
                 </div>
-            </div>
-            
-            <!-- Question 3 -->
-            <div class="space-y-4">
-                <label class="block text-xl font-semibold text-gray-800">3. How do you react to stress?</label>
-                <div class="space-y-3">
-                    <label class="flex items-center p-4 border border-gray-200 rounded-xl cursor-pointer hover:bg-gray-50 transition-colors">
-                        <input type="radio" name="q_stress" value="vata" required class="text-primary focus:ring-primary w-5 h-5">
-                        <span class="ml-3 text-gray-700">Anxiety, worry, overthinking</span>
-                    </label>
-                    <label class="flex items-center p-4 border border-gray-200 rounded-xl cursor-pointer hover:bg-gray-50 transition-colors">
-                        <input type="radio" name="q_stress" value="pitta" class="text-primary focus:ring-primary w-5 h-5">
-                        <span class="ml-3 text-gray-700">Frustration, irritation, anger</span>
-                    </label>
-                    <label class="flex items-center p-4 border border-gray-200 rounded-xl cursor-pointer hover:bg-gray-50 transition-colors">
-                        <input type="radio" name="q_stress" value="kapha" class="text-primary focus:ring-primary w-5 h-5">
-                        <span class="ml-3 text-gray-700">Withdrawal, avoidance, sluggishness</span>
-                    </label>
+
+                <!-- Radio Options Form -->
+                <div id="options-container" class="space-y-3.5 mb-8">
+                    <!-- Dynamic Option Cards Rendered Here -->
+                </div>
+
+                <!-- Navigation Controls -->
+                <div class="flex items-center justify-between pt-4 border-t border-gray-100">
+                    <button type="button" id="prev-btn" class="px-5 py-2.5 rounded-xl border border-gray-200 font-semibold text-gray-600 hover:bg-gray-50 disabled:opacity-30 disabled:cursor-not-allowed flex items-center gap-1.5 transition-colors">
+                        <span class="material-symbols-outlined text-sm">arrow_back</span>
+                        <span>Back</span>
+                    </button>
+
+                    <div class="flex items-center gap-2">
+                        <button type="button" id="jump-review-btn" class="px-4 py-2.5 rounded-xl text-xs font-semibold text-gray-500 hover:text-primary transition-colors hidden sm:inline-block">
+                            Jump to Review
+                        </button>
+                        <button type="button" id="next-btn" class="px-7 py-2.5 rounded-xl bg-primary text-white font-semibold shadow-md hover:bg-primary/90 disabled:opacity-40 disabled:cursor-not-allowed flex items-center gap-1.5 transition-all">
+                            <span id="next-btn-text">Next Question</span>
+                            <span class="material-symbols-outlined text-sm">arrow_forward</span>
+                        </button>
+                    </div>
                 </div>
             </div>
 
-            <button type="submit" id="submit-btn" class="w-full bg-primary text-white rounded-xl py-4 text-lg font-semibold shadow-lg hover:bg-primary/90 transition-colors mt-8">
-                Generate My Ayurvedic Routine
-            </button>
-        </form>
+            <!-- Review & Confirmation View (Hidden until user finishes Q24 or clicks Review) -->
+            <div id="review-screen" class="hidden bg-white p-6 sm:p-8 rounded-3xl shadow-[0_8px_30px_rgb(0,0,0,0.04)] border border-gray-100 space-y-6 fade-in">
+                <div class="border-b border-gray-100 pb-4">
+                    <span class="inline-flex items-center gap-1 text-xs font-bold uppercase tracking-wider text-primary-light mb-1">
+                        <span class="material-symbols-outlined text-xs">checklist</span>
+                        Final Verification
+                    </span>
+                    <h3 class="font-display text-2xl font-bold text-primary">Review Your 24 Assessment Answers</h3>
+                    <p class="text-gray-600 text-sm mt-1">
+                        Confirm your responses below. You may click "Edit" on any question to modify your selection before computing your preliminary Prakriti.
+                    </p>
+                </div>
+
+                <!-- Answer Summary Status -->
+                <div id="review-status-banner" class="p-4 rounded-xl flex items-center gap-3 bg-secondary-container/40 text-primary border border-secondary/20 text-sm font-semibold">
+                    <span class="material-symbols-outlined">info</span>
+                    <span id="review-status-text">All 24 questions answered. Ready for calculation.</span>
+                </div>
+
+                <!-- Review Items Grouped by Section -->
+                <div id="review-list" class="space-y-6 max-h-[480px] overflow-y-auto pr-2 divide-y divide-gray-100">
+                    <!-- Dynamic Summary Rows Injected Here -->
+                </div>
+
+                <!-- Clinical & Scope Disclaimer -->
+                <div class="p-4 rounded-xl bg-amber-50/70 border border-amber-200/60 text-xs text-amber-900 leading-relaxed flex items-start gap-2.5">
+                    <span class="material-symbols-outlined text-amber-700 text-base mt-0.5 flex-shrink-0">shield</span>
+                    <div>
+                        <strong class="font-semibold text-amber-950">Ayurvedic Educational Scoring Notice:</strong>
+                        This 24-question rubric evaluates provisional constitutional tendencies (Prakriti) based on classical principles of Ashtanga Hridaya. It is not an invasive medical diagnosis. Your personalized routine will adapt to safety guardrails and daily circadian bio-rhythms.
+                    </div>
+                </div>
+
+                <!-- Submission Error Alert (if any) -->
+                <div id="submission-error" class="hidden p-4 rounded-xl bg-red-50 border border-red-200 text-red-800 text-sm flex items-start gap-2.5">
+                    <span class="material-symbols-outlined text-red-600 text-base mt-0.5 flex-shrink-0">error</span>
+                    <div class="flex-1">
+                        <strong class="font-semibold">Unable to save assessment:</strong>
+                        <p id="submission-error-msg" class="mt-0.5 text-xs text-red-700"></p>
+                    </div>
+                </div>
+
+                <!-- Review Action Buttons -->
+                <div class="flex flex-col sm:flex-row items-center justify-between gap-3 pt-4 border-t border-gray-100">
+                    <button type="button" id="review-back-btn" class="w-full sm:w-auto px-6 py-3 rounded-xl border border-gray-300 font-semibold text-gray-700 hover:bg-gray-50 flex items-center justify-center gap-1.5 transition-colors">
+                        <span class="material-symbols-outlined text-sm">arrow_back</span>
+                        <span>Back to Questions</span>
+                    </button>
+
+                    <button type="button" id="submit-assessment-btn" class="w-full sm:w-auto px-8 py-3.5 rounded-xl bg-primary text-white font-semibold shadow-lg hover:bg-primary/90 flex items-center justify-center gap-2 transition-all">
+                        <span id="submit-btn-spinner" class="hidden animate-spin material-symbols-outlined text-base">progress_activity</span>
+                        <span id="submit-btn-text">Submit Assessment & Generate Routine</span>
+                        <span class="material-symbols-outlined text-sm">spark</span>
+                    </button>
+                </div>
+            </div>
+        </div>
     </main>
 
+    <!-- Footer -->
+    <footer class="py-6 text-center text-xs text-gray-400 border-t border-gray-100 bg-white">
+        Dinacharya AI &bull; Personalized Ayurvedic Circadian Automation Vault
+    </footer>
+
+    <!-- Assessment JavaScript Logic -->
     <script>
-        document.getElementById('questionnaire-form').addEventListener('submit', async (e) => {
-            e.preventDefault();
-            
-            const token = localStorage.getItem('dinacharya_token');
-            if (!token) {
-                window.location.href = '/login';
+        // Fallback Catalog in case of network interruption
+        const FALLBACK_CATALOG = {
+            questions: [
+                { id: "q1", number: 1, section: "A", section_title: "Physical Characteristics", text: "What best describes your natural body frame?", options: [
+                    { value: "vata", dosha: "vata", text: "Slender, lean, or lighter bone structure; joints may be prominent or delicate." },
+                    { value: "pitta", dosha: "pitta", text: "Moderate, symmetrical, athletic build with medium bone structure." },
+                    { value: "kapha", dosha: "kapha", text: "Solid, sturdy, broad frame with heavier or well-cushioned bone structure." }
+                ]},
+                { id: "q2", number: 2, section: "A", section_title: "Physical Characteristics", text: "How would you describe your skin texture?", options: [
+                    { value: "vata", dosha: "vata", text: "Tends toward dry, rough, thin, or cool to the touch; prone to chapping in dry weather." },
+                    { value: "pitta", dosha: "pitta", text: "Warm, sensitive, reddish or prone to flushing, freckles, or mild irritation." },
+                    { value: "kapha", dosha: "kapha", text: "Smooth, soft, cool, thick, well-hydrated, and naturally moisturized." }
+                ]},
+                { id: "q3", number: 3, section: "A", section_title: "Physical Characteristics", text: "What best describes your hair?", options: [
+                    { value: "vata", dosha: "vata", text: "Dry, fine, brittle, or frizzy; tends toward darker or uneven texture." },
+                    { value: "pitta", dosha: "pitta", text: "Fine, soft, silky; prone to early thinning, graying, or reddish/fair tones." },
+                    { value: "kapha", dosha: "kapha", text: "Thick, lustrous, wavy, abundant, and naturally well-rooted and strong." }
+                ]},
+                { id: "q4", number: 4, section: "A", section_title: "Physical Characteristics", text: "How would you describe your eyes?", options: [
+                    { value: "vata", dosha: "vata", text: "Small to medium, lively movement, often dry, quick or blinking frequently." },
+                    { value: "pitta", dosha: "pitta", text: "Medium-sized, sharp, focused, piercing gaze; sensitive to bright sunlight." },
+                    { value: "kapha", dosha: "kapha", text: "Large, wide, calm, deep, attractive gaze with thick, prominent eyelashes." }
+                ]},
+                { id: "q5", number: 5, section: "A", section_title: "Physical Characteristics", text: "What is the usual temperature of your hands and feet?", options: [
+                    { value: "vata", dosha: "vata", text: "Tend to feel cold or cool frequently; sensitive to drafts and chilly weather." },
+                    { value: "pitta", dosha: "pitta", text: "Consistently warm; hands and feet naturally generate noticeable heat." },
+                    { value: "kapha", dosha: "kapha", text: "Comfortable and steady, though sometimes pleasantly cool and slightly moist." }
+                ]},
+                { id: "q6", number: 6, section: "A", section_title: "Physical Characteristics", text: "What best describes your natural weight pattern?", options: [
+                    { value: "vata", dosha: "vata", text: "Difficult to gain weight; tends to fluctuate or lose weight easily during stress." },
+                    { value: "pitta", dosha: "pitta", text: "Stable, moderate weight; gains or loses with deliberate effort and exercise." },
+                    { value: "kapha", dosha: "kapha", text: "Tends to gain weight easily; loses weight slowly despite regular routine." }
+                ]},
+                { id: "q7", number: 7, section: "B", section_title: "Physiological Characteristics", text: "How would you describe your appetite?", options: [
+                    { value: "vata", dosha: "vata", text: "Irregular and variable; sometimes very hungry and other times forgetting to eat." },
+                    { value: "pitta", dosha: "pitta", text: "Strong, sharp, intense; feels distinct hunger at regular mealtimes and needs food." },
+                    { value: "kapha", dosha: "kapha", text: "Steady, mild to moderate; can comfortably skip a meal without discomfort." }
+                ]},
+                { id: "q8", number: 8, section: "B", section_title: "Physiological Characteristics", text: "How do you feel when a meal is delayed?", options: [
+                    { value: "vata", dosha: "vata", text: "Anxious, lightheaded, scattered, or experiencing mild shaky energy." },
+                    { value: "pitta", dosha: "pitta", text: "Irritable, frustrated, impatient ('hangry'), or experiencing acid sensations." },
+                    { value: "kapha", dosha: "kapha", text: "Generally calm, patient, unbothered, and able to wait comfortably." }
+                ]},
+                { id: "q9", number: 9, section: "B", section_title: "Physiological Characteristics", text: "How would you describe your digestion?", options: [
+                    { value: "vata", dosha: "vata", text: "Variable or delicate (Vishama Agni); prone to gas, bloating, or inconsistent digestive speed." },
+                    { value: "pitta", dosha: "pitta", text: "Quick and intense (Tikshna Agni); prone to hyperacidity, burning sensations, or quick transit." },
+                    { value: "kapha", dosha: "kapha", text: "Slow and steady (Manda Agni); feeling heavy, full, or lethargic for several hours after eating." }
+                ]},
+                { id: "q10", number: 10, section: "B", section_title: "Physiological Characteristics", text: "What best describes your usual bowel habits?", options: [
+                    { value: "vata", dosha: "vata", text: "Tends toward dry, hard, irregular, or prone to constipation." },
+                    { value: "pitta", dosha: "pitta", text: "Regular, soft, loose, or occurring multiple times a day." },
+                    { value: "kapha", dosha: "kapha", text: "Regular, thick, well-formed, steady, sometimes feeling slow or sluggish." }
+                ]},
+                { id: "q11", number: 11, section: "B", section_title: "Physiological Characteristics", text: "How would you describe your thirst?", options: [
+                    { value: "vata", dosha: "vata", text: "Variable and unpredictable; fluctuates between dry mouth and forgetting to drink." },
+                    { value: "pitta", dosha: "pitta", text: "High and frequent; strong natural preference for cool or refreshing beverages." },
+                    { value: "kapha", dosha: "kapha", text: "Low to moderate; rarely feels intensely thirsty and prefers warm drinks." }
+                ]},
+                { id: "q12", number: 12, section: "B", section_title: "Physiological Characteristics", text: "How do you usually respond to hot weather?", options: [
+                    { value: "vata", dosha: "vata", text: "Enjoys warmth and sunny weather; feels relaxed, limber, and energized by heat." },
+                    { value: "pitta", dosha: "pitta", text: "Dislikes excessive heat; becomes quickly fatigued, irritable, or overheated." },
+                    { value: "kapha", dosha: "kapha", text: "Tolerates heat well; prefers warm, dry weather over cold, damp environments." }
+                ]},
+                { id: "q13", number: 13, section: "B", section_title: "Physiological Characteristics", text: "What is your usual sleep pattern?", options: [
+                    { value: "vata", dosha: "vata", text: "Light, easily disrupted by sounds; tends to wake up during the night." },
+                    { value: "pitta", dosha: "pitta", text: "Sound, moderate (6–7 hours); wakes up alert and ready for the day." },
+                    { value: "kapha", dosha: "kapha", text: "Deep, heavy, undisturbed (8+ hours); often difficult or slow to get out of bed." }
+                ]},
+                { id: "q14", number: 14, section: "B", section_title: "Physiological Characteristics", text: "How easily do you fall asleep?", options: [
+                    { value: "vata", dosha: "vata", text: "Takes time; mind tends to race or wander with thoughts before falling asleep." },
+                    { value: "pitta", dosha: "pitta", text: "Falls asleep easily within 15–20 minutes, unless mentally planning or intensely driven." },
+                    { value: "kapha", dosha: "kapha", text: "Falls asleep almost immediately and effortlessly upon lying down." }
+                ]},
+                { id: "q15", number: 15, section: "B", section_title: "Physiological Characteristics", text: "How would you describe your daytime energy?", options: [
+                    { value: "vata", dosha: "vata", text: "Comes in bursts of enthusiasm followed by sudden fatigue or energy crashes." },
+                    { value: "pitta", dosha: "pitta", text: "Focused, purposeful, high stamina; tends to push through tasks until complete." },
+                    { value: "kapha", dosha: "kapha", text: "Consistent, enduring, steady stamina that builds gradually over the day." }
+                ]},
+                { id: "q16", number: 16, section: "B", section_title: "Physiological Characteristics", text: "How much do you usually sweat?", options: [
+                    { value: "vata", dosha: "vata", text: "Minimal perspiration, even during physical activity; low body odor." },
+                    { value: "pitta", dosha: "pitta", text: "Profuse or easily induced perspiration; warm body temperature and distinct odor." },
+                    { value: "kapha", dosha: "kapha", text: "Moderate, steady perspiration, primarily during prolonged exertion." }
+                ]},
+                { id: "q17", number: 17, section: "C", section_title: "Psychological and Behavioral Characteristics", text: "What best describes your usual thinking pace?", options: [
+                    { value: "vata", dosha: "vata", text: "Quick, imaginative, branching in many creative directions simultaneously." },
+                    { value: "pitta", dosha: "pitta", text: "Logical, analytical, precise, goal-directed, and structured." },
+                    { value: "kapha", dosha: "kapha", text: "Calm, contemplative, thorough, methodical, and patient." }
+                ]},
+                { id: "q18", number: 18, section: "C", section_title: "Psychological and Behavioral Characteristics", text: "How do you usually learn something new?", options: [
+                    { value: "vata", dosha: "vata", text: "Grasps concepts rapidly, but may forget details if not reinforced soon." },
+                    { value: "pitta", dosha: "pitta", text: "Grasps clearly and critically, retaining practical, applicable principles." },
+                    { value: "kapha", dosha: "kapha", text: "Takes longer to absorb, but once mastered, retains knowledge long-term." }
+                ]},
+                { id: "q19", number: 19, section: "C", section_title: "Psychological and Behavioral Characteristics", text: "How would you describe your memory?", options: [
+                    { value: "vata", dosha: "vata", text: "Strong short-term recall; tends to forget past details or misplace items." },
+                    { value: "pitta", dosha: "pitta", text: "Clear, articulate, sharp recall of relevant facts and chronological events." },
+                    { value: "kapha", dosha: "kapha", text: "Slow to register, but exceptionally strong, deep, and enduring long-term memory." }
+                ]},
+                { id: "q20", number: 20, section: "C", section_title: "Psychological and Behavioral Characteristics", text: "How do you usually react to stress?", options: [
+                    { value: "vata", dosha: "vata", text: "Feels anxious, fearful, overwhelmed, restless, or overthinks scenarios." },
+                    { value: "pitta", dosha: "pitta", text: "Becomes assertive, demanding, frustrated, impatient, or argumentative." },
+                    { value: "kapha", dosha: "kapha", text: "Remains calm on the surface, withdraws, avoids confrontation, or becomes inert." }
+                ]},
+                { id: "q21", number: 21, section: "C", section_title: "Psychological and Behavioral Characteristics", text: "How do you typically make decisions?", options: [
+                    { value: "vata", dosha: "vata", text: "Can hesitate, second-guess, or change mind frequently when options abound." },
+                    { value: "pitta", dosha: "pitta", text: "Decisive, direct, confident, and action-oriented based on available data." },
+                    { value: "kapha", dosha: "kapha", text: "Deliberate, cautious, takes time to ponder, and dislikes rushed choices." }
+                ]},
+                { id: "q22", number: 22, section: "C", section_title: "Psychological and Behavioral Characteristics", text: "How would you describe your speaking style?", options: [
+                    { value: "vata", dosha: "vata", text: "Fast, animated, expressive, sometimes jumping between different topics." },
+                    { value: "pitta", dosha: "pitta", text: "Clear, persuasive, articulate, direct, and sometimes sharp or authoritative." },
+                    { value: "kapha", dosha: "kapha", text: "Soft, resonant, calm, measured, gentle, and thoughtful." }
+                ]},
+                { id: "q23", number: 23, section: "C", section_title: "Psychological and Behavioral Characteristics", text: "How do you usually respond to new activities or changes?", options: [
+                    { value: "vata", dosha: "vata", text: "Excited, spontaneous, welcomes variety, though may lose steam early." },
+                    { value: "pitta", dosha: "pitta", text: "Embraces change if it serves a clear goal, plan, or improvement." },
+                    { value: "kapha", dosha: "kapha", text: "Prefers familiar routines, steady habits, and resists sudden disruptions." }
+                ]},
+                { id: "q24", number: 24, section: "C", section_title: "Psychological and Behavioral Characteristics", text: "What best describes your usual activity pattern?", options: [
+                    { value: "vata", dosha: "vata", text: "Restless, constantly moving, likes starting new projects and multitasking." },
+                    { value: "pitta", dosha: "pitta", text: "Organized, driven, competitive, structured, and focused on milestones." },
+                    { value: "kapha", dosha: "kapha", text: "Relaxed, unhurried, steady, prefers one task at a time with regular pacing." }
+                ]}
+            ]
+        };
+
+        let questions = FALLBACK_CATALOG.questions;
+        let currentIndex = 0;
+        let answers = {};
+        const DRAFT_STORAGE_KEY = 'dinacharya_onboarding_draft';
+
+        // Check Token & Authenticate
+        const token = localStorage.getItem('dinacharya_token');
+        if (!token) {
+            window.location.href = '/login';
+        }
+
+        const username = localStorage.getItem('dinacharya_username');
+        if (username) {
+            const userEl = document.getElementById('nav-username');
+            if (userEl) userEl.innerText = `Namaste, ${username.charAt(0).toUpperCase() + username.slice(1)}`;
+        }
+
+        // Logout
+        document.getElementById('logout-btn').onclick = () => {
+            localStorage.removeItem('dinacharya_token');
+            sessionStorage.clear();
+            window.location.href = '/login';
+        };
+
+        // Load Draft Answers from localStorage if available
+        function loadDraftAnswers() {
+            try {
+                const saved = localStorage.getItem(DRAFT_STORAGE_KEY);
+                if (saved) {
+                    answers = JSON.parse(saved);
+                }
+            } catch(e) {
+                console.warn("Could not load assessment draft", e);
+            }
+        }
+
+        function saveDraftAnswers() {
+            try {
+                localStorage.setItem(DRAFT_STORAGE_KEY, JSON.stringify(answers));
+            } catch(e) {}
+        }
+
+        // Initialize Assessment Wizard
+        async function initAssessment() {
+            loadDraftAnswers();
+
+            // Check if user already completed onboarding
+            try {
+                const stateRes = await fetch('/api/user/state', {
+                    headers: { 'Authorization': `Bearer ${token}` }
+                });
+                if (stateRes.ok) {
+                    const state = await stateRes.json();
+                    const urlParams = new URLSearchParams(window.location.search);
+                    const isRetake = urlParams.get('retake') === 'true';
+
+                    if (state.has_completed_onboarding && !isRetake) {
+                        showAlreadyCompletedView(state);
+                        return;
+                    }
+                }
+            } catch(err) {
+                console.warn("Could not check onboarding status:", err);
+            }
+
+            // Fetch live questions catalog from server
+            try {
+                const res = await fetch('/api/user/questionnaire/questions');
+                if (res.ok) {
+                    const catalog = await res.json();
+                    if (catalog.questions && catalog.questions.length === 24) {
+                        questions = catalog.questions;
+                    }
+                }
+            } catch(err) {
+                console.info("Using embedded 24-question catalog");
+            }
+
+            // If draft contains progress, advance to the first unanswered question
+            let firstUnanswered = 0;
+            for (let i = 0; i < questions.length; i++) {
+                if (!answers[questions[i].id]) {
+                    firstUnanswered = i;
+                    break;
+                }
+                if (i === questions.length - 1) firstUnanswered = 23;
+            }
+            currentIndex = firstUnanswered;
+
+            renderCurrentQuestion();
+        }
+
+        // Show Already Completed View
+        function showAlreadyCompletedView(state) {
+            document.getElementById('questionnaire-wizard').classList.add('hidden');
+            const card = document.getElementById('already-completed-card');
+            card.classList.remove('hidden');
+
+            const pProfile = state.prakriti_profile || {};
+            const titleEl = document.getElementById('completed-constitution-title');
+            const expEl = document.getElementById('completed-explanation');
+            const badgesEl = document.getElementById('completed-dosha-badges');
+
+            if (pProfile.constitution_type) {
+                titleEl.innerText = `Baseline Constitution: ${pProfile.constitution_type}`;
+            }
+            if (pProfile.explanation) {
+                expEl.innerText = pProfile.explanation;
+            } else {
+                expEl.innerText = "Your 24-question Prakriti profile is active. Daily routines and circadian advice are personalized to this constitutional foundation.";
+            }
+
+            const vec = (pProfile.dosha_vector) || (state.last_schedule?.dosha_profile?.prakriti) || { vata: 0.33, pitta: 0.33, kapha: 0.33 };
+            badgesEl.innerHTML = `
+                <div class="px-4 py-2 bg-blue-50 border border-blue-200 rounded-xl text-blue-900 text-sm font-semibold">
+                    Vata: ${Math.round((vec.vata || 0.33) * 100)}%
+                </div>
+                <div class="px-4 py-2 bg-amber-50 border border-amber-200 rounded-xl text-amber-900 text-sm font-semibold">
+                    Pitta: ${Math.round((vec.pitta || 0.33) * 100)}%
+                </div>
+                <div class="px-4 py-2 bg-emerald-50 border border-emerald-200 rounded-xl text-emerald-900 text-sm font-semibold">
+                    Kapha: ${Math.round((vec.kapha || 0.33) * 100)}%
+                </div>
+            `;
+
+            document.getElementById('retake-assessment-btn').onclick = () => {
+                window.location.search = '?retake=true';
+            };
+        }
+
+        // Render Current Question
+        function renderCurrentQuestion() {
+            document.getElementById('review-screen').classList.add('hidden');
+            document.getElementById('question-card').classList.remove('hidden');
+
+            const q = questions[currentIndex];
+            const qNum = currentIndex + 1;
+            const total = questions.length;
+            const pct = Math.round((qNum / total) * 100);
+
+            // Update Progress Header
+            document.getElementById('current-section-badge').innerText = `Section ${q.section}`;
+            document.getElementById('current-section-title').innerText = q.section_title;
+            document.getElementById('progress-question-text').innerText = `Question ${qNum} of ${total}`;
+            document.getElementById('progress-percent-text').innerText = `${pct}%`;
+            document.getElementById('progress-fill').style.width = `${pct}%`;
+
+            // Update Section Tabs
+            ['A', 'B', 'C'].forEach(sec => {
+                const tab = document.getElementById(`sec-tab-${sec}`);
+                if (!tab) return;
+                if (sec === q.section) {
+                    tab.className = 'py-1 rounded border border-primary-light bg-primary-light/10 text-primary-light font-bold cursor-pointer';
+                } else {
+                    tab.className = 'py-1 rounded border border-gray-200 text-gray-400 font-medium cursor-pointer hover:border-gray-300';
+                }
+                tab.onclick = () => {
+                    const targetIdx = questions.findIndex(item => item.section === sec);
+                    if (targetIdx !== -1) {
+                        currentIndex = targetIdx;
+                        renderCurrentQuestion();
+                    }
+                };
+            });
+
+            // Question Details
+            document.getElementById('q-number-pill').innerText = `Question ${qNum}`;
+            document.getElementById('q-text').innerText = q.text;
+
+            // Render Options
+            const container = document.getElementById('options-container');
+            container.innerHTML = '';
+
+            const selectedValue = answers[q.id] || null;
+
+            q.options.forEach((opt, idx) => {
+                const isSelected = selectedValue === opt.value;
+                const card = document.createElement('div');
+                card.className = `option-card p-4 sm:p-5 border rounded-2xl cursor-pointer flex items-start gap-4 ${isSelected ? 'selected border-primary-light bg-primary-light/5' : 'border-gray-200 bg-white hover:border-gray-300'}`;
+                card.tabIndex = 0;
+                card.setAttribute('role', 'radio');
+                card.setAttribute('aria-checked', isSelected ? 'true' : 'false');
+
+                card.innerHTML = `
+                    <div class="w-6 h-6 rounded-full border-2 flex items-center justify-center flex-shrink-0 mt-0.5 ${isSelected ? 'border-primary-light bg-primary-light text-white' : 'border-gray-300 bg-white'}">
+                        ${isSelected ? '<span class="material-symbols-outlined text-[14px]">check</span>' : ''}
+                    </div>
+                    <div class="flex-1">
+                        <span class="text-gray-800 text-sm sm:text-base leading-relaxed ${isSelected ? 'font-semibold text-primary' : 'font-normal'}">${opt.text}</span>
+                    </div>
+                `;
+
+                card.onclick = () => {
+                    selectOption(q.id, opt.value);
+                };
+
+                card.onkeydown = (e) => {
+                    if (e.key === ' ' || e.key === 'Enter') {
+                        e.preventDefault();
+                        selectOption(q.id, opt.value);
+                    }
+                };
+
+                container.appendChild(card);
+            });
+
+            // Controls
+            const prevBtn = document.getElementById('prev-btn');
+            prevBtn.disabled = currentIndex === 0;
+
+            const nextBtn = document.getElementById('next-btn');
+            const nextText = document.getElementById('next-btn-text');
+            if (currentIndex === total - 1) {
+                nextText.innerText = "Review Answers";
+            } else {
+                nextText.innerText = "Next Question";
+            }
+            nextBtn.disabled = !answers[q.id];
+        }
+
+        // Select Option Handler
+        function selectOption(qId, value) {
+            answers[qId] = value;
+            saveDraftAnswers();
+            renderCurrentQuestion();
+        }
+
+        // Navigation Handlers
+        document.getElementById('prev-btn').onclick = () => {
+            if (currentIndex > 0) {
+                currentIndex--;
+                renderCurrentQuestion();
+            }
+        };
+
+        document.getElementById('next-btn').onclick = () => {
+            if (currentIndex < questions.length - 1) {
+                currentIndex++;
+                renderCurrentQuestion();
+            } else {
+                renderReviewScreen();
+            }
+        };
+
+        document.getElementById('jump-review-btn').onclick = () => {
+            renderReviewScreen();
+        };
+
+        document.getElementById('review-back-btn').onclick = () => {
+            renderCurrentQuestion();
+        };
+
+        // Render Review & Confirmation Screen
+        function renderReviewScreen() {
+            document.getElementById('question-card').classList.add('hidden');
+            const reviewScreen = document.getElementById('review-screen');
+            reviewScreen.classList.remove('hidden');
+
+            const reviewList = document.getElementById('review-list');
+            reviewList.innerHTML = '';
+
+            let answeredCount = 0;
+
+            // Group by sections
+            const sections = [
+                { id: "A", title: "Section A: Physical Characteristics" },
+                { id: "B", title: "Section B: Physiological Characteristics" },
+                { id: "C", title: "Section C: Psychological and Behavioral Characteristics" }
+            ];
+
+            sections.forEach(sec => {
+                const secQuestions = questions.filter(q => q.section === sec.id);
+                const secContainer = document.createElement('div');
+                secContainer.className = 'pt-4 space-y-3';
+
+                const secHeader = document.createElement('h4');
+                secHeader.className = 'font-display text-lg font-bold text-primary flex items-center gap-2';
+                secHeader.innerHTML = `<span class="w-2.5 h-2.5 rounded-full bg-primary-light"></span>${sec.title}`;
+                secContainer.appendChild(secHeader);
+
+                secQuestions.forEach(q => {
+                    const userVal = answers[q.id];
+                    if (userVal) answeredCount++;
+
+                    const opt = q.options.find(o => o.value === userVal);
+                    const optText = opt ? opt.text : '<span class="text-red-500 italic font-medium">Unanswered</span>';
+
+                    const row = document.createElement('div');
+                    row.className = 'p-3.5 rounded-xl border border-gray-100 bg-gray-50/50 hover:bg-gray-50 flex items-start justify-between gap-3 text-xs sm:text-sm';
+
+                    row.innerHTML = `
+                        <div class="flex-1">
+                            <span class="font-semibold text-gray-800">${q.number}. ${q.text}</span>
+                            <div class="mt-1 text-gray-600 font-medium">${optText}</div>
+                        </div>
+                        <button type="button" class="text-primary-light hover:underline font-bold text-xs flex-shrink-0 self-center px-2 py-1" onclick="jumpToQuestion(${q.number - 1})">
+                            Edit
+                        </button>
+                    `;
+                    secContainer.appendChild(row);
+                });
+
+                reviewList.appendChild(secContainer);
+            });
+
+            // Update Status Banner
+            const statusBanner = document.getElementById('review-status-banner');
+            const statusText = document.getElementById('review-status-text');
+            const submitBtn = document.getElementById('submit-assessment-btn');
+
+            if (answeredCount === questions.length) {
+                statusBanner.className = 'p-4 rounded-xl flex items-center gap-3 bg-secondary-container/40 text-primary border border-secondary/20 text-sm font-semibold';
+                statusText.innerText = `All ${questions.length} questions answered. Your assessment is ready for submission.`;
+                submitBtn.disabled = false;
+                submitBtn.classList.remove('opacity-40', 'cursor-not-allowed');
+            } else {
+                const missing = questions.length - answeredCount;
+                statusBanner.className = 'p-4 rounded-xl flex items-center gap-3 bg-amber-50 text-amber-900 border border-amber-200 text-sm font-semibold';
+                statusText.innerText = `${missing} question(s) remaining. Please answer all questions before submitting.`;
+                submitBtn.disabled = true;
+                submitBtn.classList.add('opacity-40', 'cursor-not-allowed');
+            }
+        }
+
+        window.jumpToQuestion = function(idx) {
+            currentIndex = idx;
+            renderCurrentQuestion();
+        };
+
+        // Final Submission Handler
+        document.getElementById('submit-assessment-btn').onclick = async () => {
+            // Validate all 24 questions locally first
+            const missing = questions.filter(q => !answers[q.id]);
+            if (missing.length > 0) {
+                alert(`Please complete question ${missing[0].number} before submitting.`);
+                currentIndex = missing[0].number - 1;
+                renderCurrentQuestion();
                 return;
             }
 
-            const formData = new FormData(e.target);
-            const responses = {
-                q1: formData.get('q_digestion'),
-                q2: formData.get('q_sleep'),
-                q3: formData.get('q_stress')
-            };
+            const submitBtn = document.getElementById('submit-assessment-btn');
+            const spinner = document.getElementById('submit-btn-spinner');
+            const btnText = document.getElementById('submit-btn-text');
+            const errorDiv = document.getElementById('submission-error');
+            const errorMsg = document.getElementById('submission-error-msg');
 
-            const submitBtn = document.getElementById('submit-btn');
-            submitBtn.innerText = 'Analyzing your Doshas...';
+            errorDiv.classList.add('hidden');
             submitBtn.disabled = true;
+            spinner.classList.remove('hidden');
+            btnText.innerText = "Analyzing Prakriti & Calibrating Vault...";
 
             try {
                 const res = await fetch('/api/user/questionnaire', {
@@ -131,19 +726,38 @@
                         'Content-Type': 'application/json',
                         'Authorization': `Bearer ${token}`
                     },
-                    body: JSON.stringify({ responses })
+                    body: JSON.stringify({ responses: answers })
                 });
 
-                if (!res.ok) throw new Error("Failed to save questionnaire");
-                
-                localStorage.removeItem('dinacharya_schedule_cache');
-                window.location.href = '/dashboard';
-            } catch (err) {
-                alert(err.message);
-                submitBtn.innerText = 'Generate My Ayurvedic Routine';
+                const data = await res.json();
+
+                if (!res.ok) {
+                    throw new Error(data.detail || "Server was unable to process your responses.");
+                }
+
+                // Success: Clear draft answers & schedule cache
+                localStorage.removeItem(DRAFT_STORAGE_KEY);
+                sessionStorage.removeItem('schedule_cache');
+
+                btnText.innerText = "Assessment Complete! Redirecting...";
+
+                // Brief visual confirmation before transition
+                setTimeout(() => {
+                    window.location.href = '/dashboard';
+                }, 800);
+
+            } catch(err) {
+                console.error("Submission failed:", err);
                 submitBtn.disabled = false;
+                spinner.classList.add('hidden');
+                btnText.innerText = "Retry Submission";
+                errorMsg.innerText = err.message || "An unexpected network error occurred. Your answers remain saved.";
+                errorDiv.classList.remove('hidden');
             }
-        });
+        };
+
+        // Kick off on page load
+        window.addEventListener('DOMContentLoaded', initAssessment);
     </script>
 </body>
 </html>

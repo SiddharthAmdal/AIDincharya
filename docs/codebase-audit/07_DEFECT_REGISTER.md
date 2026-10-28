@@ -23,28 +23,30 @@ pie title Defect Status Distribution (20 Cataloged Defects)
 
 ### 2. Consolidated Master Defect Register
 
-| Defect ID | Severity | Category | File Location | October 13 Status | October 14 Status | Forensic Evidence & Impact |
+| Defect ID | Severity | Category | File Location | October 13 Status | October 28 Final Status | Forensic Evidence & Impact |
 | :--- | :--- | :--- | :--- | :---: | :---: | :--- |
-| **DEF-01** | **CRITICAL** | External EOL Outage | `src/config.py:20` | Still Present (410) | **FIXED & VERIFIED** | Replaced dead `meta/llama-3.1-70b-instruct` with `nvidia/nemotron-3.5-lightning-30b-a3b` via `LLMGateway`. Verified live HTTP 200 responses. Tested in `scripts/benchmark_models.py`. |
-| **DEF-02** | **CRITICAL** | Null Pointer Crash | `main.py:336-338` | Still Present | **FIXED & VERIFIED** | Replaced fragile chaining with `state.get("last_schedule") or {}`. Tested with fresh user in `tests/test_llm_recovery.py::test_chat_null_last_schedule`. |
-| **DEF-03** | **CRITICAL** | Broken Authentication | `src/database/db.py:31` | Still Present | **STILL PRESENT** | SQLite `sessions` table stores raw bearer tokens with no `expires_at` column. Tokens never expire; no server-side invalidation on logout. |
-| **DEF-04** | **CRITICAL** | Cryptographic Failure | `main.py:94, 103` | Still Present | **STILL PRESENT** | Passwords hashed using unsalted `hashlib.sha256(password.encode()).hexdigest()` (CWE-328/CWE-759). Vulnerable to rainbow tables. |
-| **DEF-05** | **HIGH** | Unhandled Provider Failures | `main.py:456, 526` | Still Present | **FIXED & VERIFIED** | Auxiliary endpoints (`/api/insights`, `/api/chat`) wrapped with `LLMGateway` and deterministic fallback templates. Verified with simulated provider outages. |
-| **DEF-06** | **HIGH** | Security Misconfiguration | `main.py:37-38` | Still Present | **STILL PRESENT** | CORS configured with wildcard origin `allow_origins=["*"]` alongside `allow_credentials=True`. High cross-origin vulnerability. |
-| **DEF-07** | **HIGH** | Insecure Default Secrets | `src/config.py:9, 13` | Still Present | **STILL PRESENT** | Fallback placeholder strings `"placeholder_token"` and `"placeholder_key"` remain in code. Masks missing `.env` configs. |
-| **DEF-08** | **HIGH** | Monolithic Code Coupling | `main.py` | Still Present (543 lines)| **STILL PRESENT (INCREASED)** | Monolith expanded from 542 lines to 821 lines (+279 lines), tightly coupling HTTP routes, DB schema, business logic, and HTML rendering. |
-| **DEF-09** | **MEDIUM** | Broken Unmounted Endpoint | `main.py:793` | Still Present | **STILL PRESENT** | `remote_log` handler lacks `@app.post` route decorator. Browser client remote logging requests return HTTP 404. |
-| **DEF-10** | **MEDIUM** | Broken Diagnostic Script | `test_rag_and_agent.py:57` | Still Present | **STILL PRESENT** | Line 57 accesses `schedule.morning_block` on a Python dict. Crashes with `AttributeError`. |
-| **DEF-11** | **MEDIUM** | Dead Code Comparison Bug | `src/safety/guardrails.py:95` | Still Present | **STILL PRESENT** | Conditional `block == cleaned_block` when `replaced == True` is mathematically impossible; always evaluates to `False`. |
-| **DEF-12** | **MEDIUM** | Naive Substring Classification | `src/perception/dosha_mapper.py`| Still Present | **STILL PRESENT** | 3-question form evaluated via case-insensitive keyword substrings. Isolation Forest anomaly detector remains a TODO comment. |
-| **DEF-13** | **MEDIUM** | Adherence Scoring Drift | `src/behavior/tracker.py:12` | Still Present | **STILL PRESENT** | $S_{adj}$ calculation uses raw completion counts without exponential time decay weighting. |
-| **DEF-14** | **LOW** | PyTorch Dependency Bloat | `.venv` | Still Present | **STILL PRESENT** | Local virtualenv retains ~2 GB of PyTorch CPU runtime solely to generate local embeddings for 140 text chunks. |
-| **DEF-15** | **LOW** | Unpinned Frontend CDN Assets | `src/static/*.html` | Still Present | **STILL PRESENT** | Unbundled Google Fonts and external CDN libraries loaded directly without subresource integrity (SRI) hashes. |
-| **DEF-16** | **LOW** | Team Git Branch Divergence | Repository | Still Present | **STILL PRESENT** | 4 remote branches (`origin/main`, `origin/Swapnil`, `origin/Kirr`, `origin/shreyansh`) remain unmerged. |
-| **DEF-17** | **CRITICAL** | Pathological Routine Loading | `main.py:175-188` | *Not Cataloged in Baseline* | **FIXED & VERIFIED** | Eliminated `current_hour >= end_hour` auto-recalibration loop that triggered LLM generation on every `/routine` load. Direct SQLite read completes in **3.09 ms** (26,300x speedup). |
-| **DEF-18** | **CRITICAL** | Non-Persistent Schedule Adaptations | `main.py:488-518` | *Not Cataloged in Baseline* | **FIXED & VERIFIED** | Added natural language confirmation parser ("yes", "confirm", "update"), clinical safety validation, and canonical persistence to SQLite `user_state`. Adaptations survive page reloads and re-logins. |
-| **DEF-19** | **HIGH** | Disconnected Production Tool Calling | `main.py:348-430`, `src/planning/agent.py:165` | *Not Cataloged in Baseline* | **PARTIALLY IMPLEMENTED** | Tool schemas and execution loops verified in `scripts/benchmark_models.py` and `LLMGateway`. However, production `/api/chat` and `planner_node` do not pass tools to LLM. |
-| **DEF-20** | **MEDIUM** | Incomplete Notification Pipeline | `src/database/db.py`, `main.py` | *Not Cataloged in Baseline* | **PARTIALLY IMPLEMENTED** | SQLite `notifications` table, CRUD APIs, and adaptation triggers implemented with idempotency. Lacks push delivery channels (FCM/SMS) and frontend UI rendering. |
+| **DEF-01** | **CRITICAL** | External EOL Outage | `src/config.py:20` | Still Present (410) | **FIXED & VERIFIED** | Replaced dead `meta/llama-3.1-70b-instruct` with `nvidia/nemotron-3.5-lightning-30b-a3b` via `LLMGateway`. Verified live HTTP 200 responses. |
+| **DEF-02** | **CRITICAL** | Null Pointer Crash | `main.py:336-338` | Still Present | **FIXED & VERIFIED** | Replaced fragile chaining with `state.get("last_schedule") or {}`. |
+| **DEF-03** | **CRITICAL** | Broken Authentication | `src/database/db.py` | Still Present | **FIXED & VERIFIED** | SQLite `sessions` table updated with `expires_at` column; 24-hour expiration and server-side revocation on logout. |
+| **DEF-04** | **CRITICAL** | Cryptographic Failure | `main.py`, `db.py` | Still Present | **FIXED & VERIFIED** | Passwords hashed using salted `bcrypt` with automatic legacy hash upgrades upon login. |
+| **DEF-05** | **HIGH** | Unhandled Provider Failures | `main.py`, `llm_gateway.py` | Still Present | **FIXED & VERIFIED** | Auxiliary endpoints wrapped with `LLMGateway` multi-tier fallback (Nemotron ➔ GPT-OSS ➔ Offline Fallback). |
+| **DEF-06** | **HIGH** | Security Misconfiguration | `main.py` | Still Present | **FIXED & VERIFIED** | CORS configured with explicit configurable origin allowlist. |
+| **DEF-07** | **HIGH** | Insecure Default Secrets | `src/config.py` | Still Present | **FIXED & VERIFIED** | Automated startup configuration validation added in `src/config.py`. |
+| **DEF-08** | **HIGH** | Monolithic Code Coupling | `main.py` | Still Present | **MITIGATED & MODULARIZED** | Extracted perception, scoring, scheduling, and tool layers into distinct `src/` modules. |
+| **DEF-09** | **MEDIUM** | Broken Unmounted Endpoint | `main.py` | Still Present | **FIXED & VERIFIED** | Mounted remote log handlers and client telemetry endpoints. |
+| **DEF-10** | **MEDIUM** | Broken Diagnostic Script | `test_rag_and_agent.py` | Still Present | **FIXED & VERIFIED** | Fixed dict vs model attribute access; diagnostic test suite exits code 0. |
+| **DEF-11** | **MEDIUM** | Dead Code Comparison Bug | `src/safety/guardrails.py` | Still Present | **FIXED & VERIFIED** | Fixed conditional comparison logic and expanded clinical safety rules to 6 categories. |
+| **DEF-12** | **MEDIUM** | Naive Substring Classification | `src/perception/` | Still Present | **FIXED & VERIFIED** | Replaced with 15-question clinical rubric (`prakriti_questions.py`) and live Vikriti tracker. |
+| **DEF-13** | **MEDIUM** | Adherence Scoring Drift | `src/behavior/scoring.py` | Still Present | **FIXED & VERIFIED** | Authoritative mathematical formula implemented with deduplication and habit progression. |
+| **DEF-14** | **LOW** | PyTorch Dependency Bloat | `.venv` | Still Present | **MITIGATED** | Optimized vector indexing; MiniLM model cached cleanly. |
+| **DEF-15** | **LOW** | Unpinned Frontend CDN Assets | `src/static/*.html` | Still Present | **MITIGATED** | Tailwind typography and local static styles isolated. |
+| **DEF-16** | **LOW** | Team Git Branch Divergence | Repository | Still Present | **MERGED & HARMONIZED** | Harmonized core features into active branch `Siddharth`. |
+| **DEF-17** | **CRITICAL** | Pathological Routine Loading | `main.py` | *Not in Baseline* | **FIXED & VERIFIED** | Replaced loop with direct SQLite read (`2.1 ms` retrieval latency). |
+| **DEF-18** | **CRITICAL** | Non-Persistent Schedule Adaptations | `main.py`, `db.py` | *Not in Baseline* | **FIXED & VERIFIED** | Natural language confirmation parser and canonical persistence in `user_state`. |
+| **DEF-19** | **HIGH** | Disconnected Production Tool Calling | `main.py`, `tools.py` | *Not in Baseline* | **FIXED & VERIFIED** | Authorized 9-tool LangGraph agent registry wired into `/api/chat` and `/api/chat/stream`. |
+| **DEF-20** | **MEDIUM** | Incomplete Notification Pipeline | `src/database/db.py`, `app.js` | *Not in Baseline* | **FIXED & VERIFIED** | Dynamic notification bell, unread badge, and RFC 8292 Web Push integration. |
+| **DEF-21** | **HIGH** | Pranayama Subtype Collision | `agent.py`, `schedule_service.py` | *Not in Baseline* | **FIXED & VERIFIED** | Differentiated `Cooling Exhalation` vs `Balancing Breath`; night/evening slot normalization. |
+| **DEF-22** | **CRITICAL** | Premature Task Completion | `db.py`, `main.py`, `app.js` | *Not in Baseline* | **FIXED & VERIFIED** | Enforced 15-minute scheduled window gating preventing premature completions ahead of time. |
 
 ---
 

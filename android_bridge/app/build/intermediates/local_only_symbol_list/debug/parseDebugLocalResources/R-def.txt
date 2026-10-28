@@ -1,0 +1,15 @@
+R_DEF: Internal format may change without notice
+local
+id btnRequestPermissions
+id btnSyncNow
+id etPassword
+id etServerUrl
+id etToken
+id etUsername
+id switchBackgroundSync
+id tvHealthConnectStatus
+id tvPermissionsStatus
+id tvSyncLog
+layout activity_main
+string app_name
+style Theme.AiDincharyaBridge

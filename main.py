@@ -9,22 +9,25 @@ from datetime import datetime
 from typing import Dict, Any, List, Optional
 from pydantic import BaseModel, Field
 from fastapi import FastAPI, HTTPException, Header, Depends
-from fastapi.responses import HTMLResponse, RedirectResponse, Response
+from fastapi.responses import HTMLResponse, RedirectResponse, Response, StreamingResponse
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 
 from src.database import db
 from src.models import (
     UserAuthRequest, AuthResponse, QuestionnaireRequest,
-    ScheduleGenerateRequest, AdherenceLogRequest, ChatRequest,
+    ScheduleGenerateRequest, AdherenceLogRequest, ActivityCompleteRequest, ChatRequest,
     DoshaProfile, UserContext, Practice, DinacharyaSchedule,
     ProposalActionRequest, ScheduleProposal
 )
 from src.perception.dosha_mapper import DoshaMapper
 from src.behavior.tracker import AdherenceTracker
+from src.behavior.scoring import ScoringEngine
 from src.planning.agent import DinacharyaPlannerAgent
 from src.safety.guardrails import ClinicalRuleEngine
 from src.knowledge.retriever import AyurvedaKnowledgeBase
+from src.perception.vikriti_tracker import VikritiTracker
+from src.perception.wearable_interface import WearableTelemetryManager, HealthConnectPayload
 from src.config import APP_NAME, DEBUG, DEFAULT_MODEL, validate_config
 from src.llm_gateway import LLMGateway
 
@@ -152,6 +155,12 @@ def logout(authorization: Optional[str] = Header(None)):
         raise HTTPException(status_code=400, detail="Could not revoke session")
     return {"status": "success", "message": "Logged out successfully"}
 
+from src.perception.prakriti_questions import (
+    get_prakriti_catalog,
+    validate_questionnaire_responses,
+    PRAKRITI_QUESTIONS
+)
+
 @app.post("/remote_log")
 @app.post("/api/log")
 def remote_log(payload: Dict[str, Any]):
@@ -159,14 +168,165 @@ def remote_log(payload: Dict[str, Any]):
     logger.info(f"[RemoteLog] {payload}")
     return {"status": "logged"}
 
+@app.get("/api/user/questionnaire/questions")
+def get_assessment_questions():
+    """Returns the 24-question Prakriti assessment catalog organized into sections."""
+    return get_prakriti_catalog()
+
 @app.post("/api/user/questionnaire")
 def save_questionnaire(req: QuestionnaireRequest, user_id: int = Depends(get_current_user)):
-    db.update_user_questionnaire(user_id, req.responses)
-    return {"status": "success"}
+    # 1. Server-side validation of the 24 questions, identifiers, and allowed values
+    is_valid, error_msg = validate_questionnaire_responses(req.responses)
+    if not is_valid:
+        raise HTTPException(status_code=422, detail=error_msg)
+
+    # 2. Calculate preliminary Prakriti profile using DoshaMapper
+    prakriti_explanation = DoshaMapper.explain_prakriti_classification(req.responses)
+    
+    # 3. Persist answers, preliminary profile, and set onboarding completed (resets cached schedule)
+    db.update_user_questionnaire(user_id, req.responses, prakriti_profile=prakriti_explanation)
+
+    logger.info(f"User {user_id} completed 24-question assessment: {prakriti_explanation.get('constitution_type')}")
+    return {
+        "status": "success",
+        "message": "Prakriti assessment recorded successfully",
+        "has_completed_onboarding": True,
+        "prakriti": prakriti_explanation.get("dosha_vector", {}),
+        "assessment_summary": prakriti_explanation
+    }
 
 @app.get("/api/user/state")
 def get_state(user_id: int = Depends(get_current_user)):
     return db.get_user_state(user_id)
+
+
+class VikritiCheckinRequest(BaseModel):
+    symptoms: List[str] = Field(default_factory=list)
+    telemetry: Optional[Dict[str, float]] = None
+
+
+@app.post("/api/user/vikriti")
+def log_vikriti_checkin(req: VikritiCheckinRequest, user_id: int = Depends(get_current_user)):
+    """
+    Records an authentic daily symptom observation and dynamic Vikriti state.
+    Distinguishes self-report from wearable telemetry and tracks longitudinal trends.
+    """
+    past_obs = db.get_vikriti_observations(user_id, limit=7)
+    flags, prov = VikritiTracker.estimate_vikriti(
+        symptoms=req.symptoms,
+        telemetry=req.telemetry,
+        past_observations=past_obs
+    )
+    db.update_current_vikriti(
+        user_id,
+        telemetry=req.telemetry or {},
+        symptoms=req.symptoms or [],
+        estimate=flags.model_dump(),
+        confidence=prov.get("confidence", "provisional"),
+        data_status=prov.get("data_availability_status", "self_report_only")
+    )
+    return {
+        "status": "success",
+        "vikriti_estimate": flags.model_dump(),
+        "confidence": prov.get("confidence"),
+        "data_availability_status": prov.get("data_availability_status"),
+        "provenance": prov
+    }
+
+
+@app.get("/api/user/vikriti/history")
+def get_vikriti_history(user_id: int = Depends(get_current_user)):
+    """Returns the longitudinal Vikriti observation history for the user."""
+    return {
+        "observations": db.get_vikriti_observations(user_id, limit=14)
+    }
+
+
+@app.post("/api/telemetry/health_connect")
+def ingest_health_connect_telemetry(payload: Dict[str, Any], user_id: int = Depends(get_current_user)):
+    """
+    Ingests verified wearable records from Android Health Connect (e.g. Fastrack Noir Charm, Amazfit).
+    Enforces freshness window (rejects records > 36h old or future-dated).
+    Persists discrete records with stable deduplication and updates telemetry baselines.
+    """
+    try:
+        hc_payload = HealthConnectPayload(**payload)
+    except Exception as e:
+        raise HTTPException(status_code=422, detail=f"Invalid Health Connect payload: {str(e)}")
+
+    processed = WearableTelemetryManager.ingest_payload(hc_payload)
+    signals = processed.get("signals") or processed.get("verified_signals") or {}
+    discrete_records = processed.get("discrete_records", [])
+
+    if not signals and not discrete_records:
+        raise HTTPException(status_code=400, detail="No valid wearable signals ingested")
+
+    device_model = processed.get("device", "Fastrack Noir Charm")
+    source_pkg = processed.get("source_package", "com.google.android.apps.healthdata")
+    prov = processed.get("acquisition_method", "health_connect_import")
+    rec_time = processed.get("timestamp", time.time())
+
+    inserted_count = 0
+    duplicate_count = 0
+
+    # 1. Persist each discrete record idempotently
+    for r in discrete_records:
+        rec_id = r.get("record_id")
+        if not rec_id:
+            rec_id = hashlib.sha256(f"{user_id}:{r['metric_type']}:{r['timestamp']}:{r['value']}:{r.get('source_package', source_pkg)}".encode()).hexdigest()[:24]
+
+        is_new = db.save_telemetry_record(
+            user_id=user_id,
+            record_id=rec_id,
+            metric_type=r["metric_type"],
+            metric_value=float(r["value"]),
+            unit=r.get("unit", "raw"),
+            recorded_at=float(r.get("timestamp", rec_time)),
+            source_package=r.get("source_package", source_pkg),
+            device_model=r.get("device_model", device_model),
+            provenance=r.get("acquisition_method", prov),
+            aggregation_type=r.get("aggregation_type", "interval" if r["metric_type"] == "steps" else "instantaneous")
+        )
+        if is_new:
+            inserted_count += 1
+        else:
+            duplicate_count += 1
+
+    # 2. Update user_state telemetry_baselines with latest verified signals (strictly scoped to authenticated user)
+    if signals:
+        state = db.get_user_state(user_id)
+        baselines = state.get("telemetry_baselines", {})
+        baselines.update(signals)
+        conn = db.get_db_connection()
+        c = conn.cursor()
+        c.execute('''
+            INSERT INTO user_state (user_id, telemetry_baselines) VALUES (?, ?)
+            ON CONFLICT(user_id) DO UPDATE SET telemetry_baselines = excluded.telemetry_baselines
+        ''', (user_id, json.dumps(baselines)))
+        conn.commit()
+        conn.close()
+
+    processed["inserted_count"] = inserted_count
+    processed["duplicate_count"] = duplicate_count
+    return processed
+
+
+@app.get("/api/telemetry/records")
+def get_user_telemetry_history(
+    metric_type: Optional[str] = None,
+    limit: int = 50,
+    user_id: int = Depends(get_current_user)
+):
+    """
+    Returns stored verified wearable records for the authenticated user,
+    retaining original timestamps, units, stable record IDs, and provenance.
+    """
+    records = db.get_user_telemetry_records(user_id, metric_type=metric_type, limit=limit)
+    return {
+        "records": records,
+        "count": len(records),
+        "user_id": user_id
+    }
 
 
 # --- Shared Validation Helper ---
@@ -180,18 +340,36 @@ def validate_and_format_schedule(
 ) -> Dict[str, Any]:
     """Passes a raw candidate schedule through the safety boundary and formats the response."""
     # Safety Domain Boundary
-    validated_schedule = ClinicalRuleEngine.validate(candidate_schedule, profile)
+    safety_output = ClinicalRuleEngine.validate(candidate_schedule, profile)
+    if isinstance(safety_output, dict) and "schedule" in safety_output:
+        validated_schedule = safety_output["schedule"]
+        safety_overrides = safety_output.get("overrides_applied", [])
+    else:
+        validated_schedule = safety_output
+        safety_overrides = []
     
+    provenance = getattr(candidate_schedule, "provenance", None)
+    if provenance:
+        if safety_overrides:
+            provenance["safety_modifications"] = safety_overrides
+        validated_schedule.provenance = provenance
+
     nudge = AdherenceTracker.generate_behavior_nudge(adherence_score)
 
-    return {
+    result = {
         "schedule": validated_schedule.model_dump(),
         "dosha_profile": profile.model_dump(),
         "complexity_level": complexity,
         "behavioral_nudge": nudge,
         "retrieved_guidelines": retrieved_guidelines,
+        "provenance": provenance,
         "timestamp": time.time()
     }
+
+    if getattr(profile, "assessment_status", "completed") == "unassessed":
+        result["reduced_personalization_notice"] = "No completed 24-question Prakriti assessment found on record. Delivering a reduced-personalization balanced routine."
+
+    return result
 
 
 # --- Core AI API ---
@@ -221,10 +399,38 @@ def generate_schedule(request: ScheduleGenerateRequest, user_id: int = Depends(g
 
         logger.info(f"Generating/Compensating routine for user {user_id}...")
 
-        # Persist the current telemetry/symptoms as Vikriti so the Chat Agent can see it later
-        db.update_current_vikriti(user_id, request.wearable_telemetry_7d, request.context.self_report_symptoms)
+        # Evaluate wearable telemetry freshness (from request or authenticated user's persisted baselines)
+        telemetry_signals = request.wearable_telemetry_7d
+        if not telemetry_signals and state.get("telemetry_baselines"):
+            telemetry_signals = state.get("telemetry_baselines")
 
-        # 2. Perception Domain
+        if telemetry_signals:
+            is_fresh, fresh_msg = WearableTelemetryManager.check_freshness(telemetry_signals)
+            if not is_fresh:
+                logger.warning(f"Telemetry stale/invalid for user {user_id}: {fresh_msg}. Ignoring stale telemetry.")
+                telemetry_signals = None
+
+        # Retrieve past longitudinal observations for trend context
+        past_obs = db.get_vikriti_observations(user_id, limit=7)
+
+        # Estimate dynamic Vikriti using structured tracker
+        vikriti_flags, vikriti_prov = VikritiTracker.estimate_vikriti(
+            symptoms=request.context.self_report_symptoms,
+            telemetry=telemetry_signals,
+            past_observations=past_obs
+        )
+
+        # Persist the current telemetry/symptoms as Vikriti so the Chat Agent and future queries see it
+        db.update_current_vikriti(
+            user_id,
+            telemetry=telemetry_signals or {},
+            symptoms=request.context.self_report_symptoms or [],
+            estimate=vikriti_flags.model_dump(),
+            confidence=vikriti_prov.get("confidence", "provisional"),
+            data_status=vikriti_prov.get("data_availability_status", "self_report_only")
+        )
+
+        # 2. Perception Domain: Build DoshaProfile
         symptoms_map = {}
         if request.context.self_report_symptoms:
             for idx, sym in enumerate(request.context.self_report_symptoms):
@@ -236,9 +442,11 @@ def generate_schedule(request: ScheduleGenerateRequest, user_id: int = Depends(g
         profile = DoshaMapper.generate_profile(
             user_id=str(user_id),
             questionnaire=questionnaire,
-            telemetry=request.wearable_telemetry_7d,
+            telemetry=telemetry_signals,
             symptoms=symptoms_map
         )
+        profile.vikriti_flags = vikriti_flags
+
 
         # 3. Behavior Domain
         complexity = AdherenceTracker.determine_complexity(adherence_score)
@@ -284,29 +492,63 @@ def get_current_schedule(user_id: int = Depends(get_current_user)):
     today_date = datetime.now().strftime('%Y-%m-%d')
     cached_sched = state.get("last_schedule")
     
-    if cached_sched and isinstance(cached_sched, dict) and "schedule" in cached_sched:
-        if state.get("schedule_date") != today_date:
-            db.save_user_schedule(user_id, cached_sched, today_date)
-        return cached_sched
+    if cached_sched and isinstance(cached_sched, dict):
+        if "schedule" in cached_sched and isinstance(cached_sched["schedule"], dict):
+            if state.get("schedule_date") != today_date:
+                db.save_user_schedule(user_id, cached_sched, today_date)
+            return cached_sched
+        elif "morning_block" in cached_sched or "midday_block" in cached_sched or "evening_block" in cached_sched:
+            wrapped = {"schedule": cached_sched}
+            if state.get("schedule_date") != today_date:
+                db.save_user_schedule(user_id, wrapped, today_date)
+            return wrapped
             
     return {"schedule": None, "message": "No routine scheduled for today"}
 
 
+@app.post("/api/activities/complete", response_model=Dict[str, Any])
+def complete_activity_endpoint(request: ActivityCompleteRequest, user_id: int = Depends(get_current_user)):
+    """
+    Authoritative task completion endpoint.
+    Persistently marks a practice complete in activity_lifecycle and completions tables,
+    idempotently recalculates adherence score, and updates user state.
+    """
+    target_practice = request.practice_name or request.activity_id
+    if not target_practice:
+        raise HTTPException(status_code=400, detail="Missing activity_id or practice_name")
+    
+    res = db.complete_user_activity(
+        user_id=user_id,
+        activity_id_or_name=target_practice,
+        date_str=request.date,
+        allow_early=request.allow_early or False
+    )
+    if not res.get("success"):
+        raise HTTPException(status_code=400, detail=res.get("error", "Failed to mark activity complete"))
+    return res
+
+
 @app.post("/api/adherence/log", response_model=Dict[str, Any])
 def log_adherence(request: AdherenceLogRequest, user_id: int = Depends(get_current_user)):
-    completed_count = len(request.completed_practices)
-    recommended_count = len(request.recommended_practices)
-
-    # 1. Update overall adherence score
-    new_score = AdherenceTracker.calculate_adherence_score(completed_count, recommended_count)
-    db.update_adherence_score(user_id, new_score)
-    
-    # 2. Save specific task completions for the day
+    """
+    Logs completed practices and updates overall adherence score.
+    Uses authoritative complete_user_activity to ensure SQLite persistence,
+    idempotent deduplication, and accurate adherence calculation.
+    """
+    last_res = {}
     for practice in request.completed_practices:
-        db.save_completion(user_id, practice)
+        last_res = db.complete_user_activity(user_id=user_id, activity_id_or_name=practice, allow_early=True)
 
-    # NOTE: No longer invalidating the cache here, as per user request.
-    # The cache will only be bypassed if a task is "missed" in the next GET.
+    if request.recommended_practices:
+        rec_count = len(request.recommended_practices)
+        comp_count = len(request.completed_practices)
+        new_score = AdherenceTracker.calculate_adherence_score(comp_count, rec_count)
+        state_db = db.get_user_state(user_id)
+        state_db["adherence_score"] = new_score
+        db.save_user_state(user_id, state_db)
+    else:
+        state = db.get_user_state(user_id)
+        new_score = state.get("adherence_score", 0.0)
 
     complexity = AdherenceTracker.determine_complexity(new_score)
     nudge = AdherenceTracker.generate_behavior_nudge(new_score)
@@ -316,6 +558,8 @@ def log_adherence(request: AdherenceLogRequest, user_id: int = Depends(get_curre
         "adherence_score": new_score,
         "next_complexity_level": complexity,
         "behavioral_nudge": nudge,
+        "completed_count": last_res.get("completed_count", len(request.completed_practices)),
+        "total_eligible_count": last_res.get("total_eligible_count", len(request.completed_practices)),
         "timestamp": time.time()
     }
 
@@ -376,13 +620,147 @@ Each must have: "category", "title", "desc"."""
         return {"insights": _default_insights(), "timestamp": time.time(), "is_fallback": True}
 
 
-@app.post("/api/chat", response_model=Dict[str, Any])
-def chat_assistant(request: ChatRequest, user_id: int = Depends(get_current_user)):
+@app.get("/api/dashboard/summary", response_model=Dict[str, Any])
+def get_dashboard_summary(user_id: int = Depends(get_current_user)):
     """
-    Conversational Vaidya assistant powered by the centralized LLMGateway.
-    Gracefully handles null schedule state, provider timeouts, and cross-agent recalibrations.
+    Authenticated aggregated endpoint providing authentic data for the dashboard:
+    - User state and profile (Prakriti / Vikriti)
+    - Adherence percentage (from genuine completions)
+    - 5-day adherence completion counts (trend)
+    - Legitimate Wellness Score with documented inputs
+    - Sleep metrics (None / unavailable if no sleep stages or records exist)
+    - Wearable telemetry summary (HR, SpO2, Steps, Sleep, Stress)
+    - Current schedule tasks for today
     """
     try:
+        from src.perception.wearable_interface import WearableTelemetryManager
+        state = db.get_user_state(user_id) or {}
+        completions_today = db.get_today_completions(user_id)
+        trend_completions = db.get_daily_completion_counts(user_id, days=5)
+        telemetry = WearableTelemetryManager.get_user_telemetry_summary(user_id)
+        cached_sched = state.get("last_schedule") or {}
+        metrics = telemetry.get("metrics", {})
+        hr_info = metrics.get("heart_rate", {})
+        spo2_info = metrics.get("spo2", {})
+        steps_info = metrics.get("steps", {})
+        sleep_info = metrics.get("sleep", {})
+        stress_info = metrics.get("stress", {})
+
+        # Authoritative scoring using centralized ScoringEngine specification
+        scores_bundle = ScoringEngine.derive_user_scores_from_telemetry_and_state(
+            user_id=user_id,
+            state=state,
+            telemetry_summary=telemetry
+        )
+
+        sleep_res = scores_bundle["sleep"]
+        wellness_res = scores_bundle["wellness"]
+        adherence_res = scores_bundle["adherence"]
+
+        adherence_pct = adherence_res["rounded_score"]
+        wellness_score = wellness_res["rounded_score"] if wellness_res["rounded_score"] is not None else "--"
+        wellness_formula = wellness_res.get("formula", "W = 0.35*S + 0.25*A + 0.25*P + 0.15*U")
+
+        sleep_duration = None
+        if sleep_info.get("status") == "available" and sleep_info.get("value") is not None:
+            sleep_hours = float(sleep_info["value"])
+            hrs = int(sleep_hours)
+            mins = int((sleep_hours % 1) * 60)
+            sleep_duration = f"{hrs}h {mins}m"
+
+        sleep_score = sleep_res.get("rounded_score")
+        sleep_status = "Awaiting overnight cycle" if sleep_score is None else f"{sleep_score}/100"
+        sleep_note = sleep_res.get("note", "Wear watch overnight to record sleep.")
+
+        # Format measurement ISO strings if recorded_at timestamp exists
+        hr_ts = time.strftime('%Y-%m-%dT%H:%M:%S', time.localtime(hr_info['recorded_at'])) if hr_info.get('recorded_at') else None
+        spo2_ts = time.strftime('%Y-%m-%dT%H:%M:%S', time.localtime(spo2_info['recorded_at'])) if spo2_info.get('recorded_at') else None
+        steps_ts = time.strftime('%Y-%m-%dT%H:%M:%S', time.localtime(steps_info['recorded_at'])) if steps_info.get('recorded_at') else None
+        last_sync_ts = time.strftime('%Y-%m-%dT%H:%M:%S', time.localtime(telemetry['last_recorded_at'])) if telemetry.get('last_recorded_at') else None
+
+        dashboard_telemetry = {
+            "has_wearable": telemetry.get("has_wearable_data", False),
+            "device_model": telemetry.get("device_model", "Fastrack Noir Charm"),
+            "source_package": telemetry.get("source_package", "com.titan.fastrack.reflex"),
+            "is_sync_active": telemetry.get("is_sync_active", False),
+            "last_sync": last_sync_ts,
+            "heart_rate": {
+                "value": hr_info.get("value"),
+                "unit": hr_info.get("unit", "bpm"),
+                "status": hr_info.get("status"),
+                "measured_at": hr_ts,
+                "is_available": hr_info.get("status") in ("available", "baseline_available"),
+                "provenance": hr_info.get("provenance")
+            },
+            "steps": {
+                "value": steps_info.get("value"),
+                "unit": steps_info.get("unit", "steps"),
+                "status": steps_info.get("status"),
+                "measured_at": steps_ts,
+                "is_available": steps_info.get("status") in ("available", "baseline_available"),
+                "provenance": steps_info.get("provenance")
+            },
+            "spo2": {
+                "value": spo2_info.get("value"),
+                "unit": spo2_info.get("unit", "%"),
+                "status": spo2_info.get("status"),
+                "measured_at": spo2_ts,
+                "is_available": spo2_info.get("status") in ("available", "baseline_available"),
+                "provenance": spo2_info.get("provenance")
+            },
+            "sleep": {
+                "value": sleep_info.get("value"),
+                "status": sleep_info.get("status"),
+                "is_available": sleep_info.get("status") == "available",
+                "reason": sleep_info.get("reason", "Awaiting overnight cycle")
+            },
+            "stress": {
+                "value": stress_info.get("value"),
+                "status": stress_info.get("status"),
+                "is_available": stress_info.get("status") == "available",
+                "reason": stress_info.get("reason", "Hardware does not track stress")
+            }
+        }
+
+        return {
+            "user_id": user_id,
+            "username": state.get("username", "Friend"),
+            "wellness_score": wellness_score,
+            "wellness_formula": wellness_formula,
+            "sleep_score": sleep_score,
+            "sleep_duration": sleep_duration,
+            "sleep_status": sleep_status,
+            "sleep_note": sleep_note,
+            "adherence_pct": adherence_pct,
+            "adherence_trend": trend_completions,
+            "dosha_profile": state.get("dosha_profile") or {},
+            "prakriti_profile": state.get("prakriti_profile") or {},
+            "telemetry": dashboard_telemetry,
+            "schedule": cached_sched,
+            "completions_today": completions_today,
+            "activities": db.get_user_activities(user_id, date_str=datetime.now().strftime("%Y-%m-%d")),
+            "scores": scores_bundle,
+            "is_upstream_stale": telemetry.get("is_upstream_stale", False),
+            "stale_warning_message": telemetry.get("stale_warning_message"),
+            "timestamp": time.time()
+        }
+    except Exception as e:
+        logger.error(f"Error generating dashboard summary for user {user_id}: {e}")
+        raise HTTPException(status_code=500, detail="Failed to load dashboard summary.")
+
+
+def _run_chat_engine(request: ChatRequest, user_id: int, on_event: Optional[Any] = None) -> Dict[str, Any]:
+    """
+    Core conversational Vaidya assistant logic powered by centralized LLMGateway.
+    Gracefully handles null schedule state, provider timeouts, and live event callbacks.
+    """
+    try:
+        if on_event:
+            try:
+                on_event({"stage": "query_received", "message": "Query received by Ayurvedic reasoning agent", "timestamp": time.time()})
+            except Exception:
+                pass
+
         planner = DinacharyaPlannerAgent()
         gateway = LLMGateway.get_instance()
         
@@ -396,9 +774,19 @@ def chat_assistant(request: ChatRequest, user_id: int = Depends(get_current_user
         adherence_score = state.get("adherence_score", 1.0)
         
         # Format Questionnaire for AI
-        q_text = "USER'S ASSESSMENT DATA:\n"
+        q_meta = {item["id"]: (item["number"], item["text"]) for item in PRAKRITI_QUESTIONS}
+        q_text = "USER'S CONSTITUTIONAL ASSESSMENT DATA (24-Question Prakriti):\n"
         for q, a in questionnaire.items():
-            q_text += f"- {q}: {a}\n"
+            if q in q_meta:
+                q_num, q_question = q_meta[q]
+                q_text += f"- Q{q_num} ({q_question}): {str(a).upper()}\n"
+            else:
+                q_text += f"- {q}: {a}\n"
+        
+        saved_prakriti = state.get("prakriti_profile", {})
+        if saved_prakriti:
+            c_type = saved_prakriti.get("constitution_type", "Provisional")
+            q_text += f"ASSESSED BASELINE PRAKRITI: {c_type}\n"
 
         # Format routine for AI
         routine_summary = "USER'S CURRENT SCHEDULE:\n"
@@ -410,10 +798,13 @@ def chat_assistant(request: ChatRequest, user_id: int = Depends(get_current_user
                     if isinstance(p, dict):
                         routine_summary += f"- {p.get('name', 'Practice')} ({p.get('time_slot', 'Flexible')})\n"
 
-        # Fetch persisted Vikriti
-        current_vikriti = state.get("current_vikriti", {})
-        telemetry = current_vikriti.get("telemetry", {})
-        symptoms_list = current_vikriti.get("symptoms", [])
+        # Fetch persisted Vikriti safely
+        current_vikriti = state.get("current_vikriti") or {}
+        if not isinstance(current_vikriti, dict):
+            current_vikriti = {}
+        telemetry = current_vikriti.get("telemetry") or {}
+        symptoms_raw = current_vikriti.get("symptoms")
+        symptoms_list = symptoms_raw if isinstance(symptoms_raw, list) else []
         
         symptoms_map = {}
         for idx, sym in enumerate(symptoms_list):
@@ -442,6 +833,12 @@ def chat_assistant(request: ChatRequest, user_id: int = Depends(get_current_user
                     guidelines.append(mg)
                     seen_g.add(mg["text"][:120])
         guidelines_text = "\n".join([f"- [{g.get('source', 'Ayurveda Grounding')}] {g['text']}" for g in guidelines])
+
+        if on_event:
+            try:
+                on_event({"stage": "rag_retrieval_complete", "message": f"Retrieved {len(guidelines)} grounding guidelines", "timestamp": time.time()})
+            except Exception:
+                pass
 
         # Check if user message is an explicit acceptance or rejection of a prior proposal
         db_history = db.get_chat_history(user_id, limit=10)
@@ -492,8 +889,15 @@ def chat_assistant(request: ChatRequest, user_id: int = Depends(get_current_user
                     sched_root_pre.get("evening_block", [])
                 )
         p_names_all = [p.get("name", "") if isinstance(p, dict) else p.name for p in all_practices]
+        ai_proposed_candidates = [
+            "Evening Gratitude Journaling", "Meditative Journaling", "Reflective Journaling",
+            "Evening Journaling", "Gratitude Journaling", "Journaling",
+            "Evening wind-down gratitude journaling", "Mindful Journaling"
+        ]
+        all_candidate_practices = list(dict.fromkeys(p_names_all + ai_proposed_candidates))
 
         from src.planning.agent import extract_practice_time_updates, standardize_slot
+
         from src.planning.schedule_service import (
             resolve_practice_intent,
             formulate_canonical_proposal,
@@ -526,21 +930,31 @@ def chat_assistant(request: ChatRequest, user_id: int = Depends(get_current_user
                     # that might not yet be in p_names_all or is a substring
                     generic_candidates = ["Pranayama", "Abhyanga", "Snana (Bath)", "Vyayama (Exercise)", "Light Early Dinner", "Mitahara", "Trataka"]
                     user_requested_updates = extract_practice_time_updates(request.message, p_names_all + generic_candidates)
-                if not user_requested_updates and has_time_in_msg and db_history:
-                    # Counter-proposal follow-up (e.g. "No, I would like 9:00 PM" where the practice name was in a prior turn)
+                if not user_requested_updates and has_time_in_msg:
+                    # Counter-proposal follow-up (e.g. "No, I would like 9:00 PM" where the practice was in a recent proposal or turn)
                     prev_act = None
-                    for turn in reversed(db_history):
-                        t_content = turn.get("content", "")
-                        prev_updates = extract_practice_time_updates(t_content, p_names_all)
-                        if prev_updates:
-                            prev_act = next(iter(prev_updates.keys()))
-                            break
-                        for cand_p in p_names_all:
-                            if cand_p and cand_p.lower() in t_content.lower():
-                                prev_act = cand_p
+                    # Prioritize the target practice of the most recent proposal (whether pending, superseded, or rejected)
+                    conn_p = db.get_db_connection()
+                    cp = conn_p.cursor()
+                    cp.execute("SELECT target_practice FROM schedule_proposals WHERE user_id = ? ORDER BY created_at DESC LIMIT 1", (user_id,))
+                    rp = cp.fetchone()
+                    conn_p.close()
+                    if rp and rp["target_practice"]:
+                        prev_act = rp["target_practice"]
+
+                    if not prev_act and db_history:
+                        for turn in reversed(db_history):
+                            t_content = turn.get("content", "")
+                            prev_updates = extract_practice_time_updates(t_content, p_names_all)
+                            if prev_updates:
+                                prev_act = next(iter(prev_updates.keys()))
                                 break
-                        if prev_act:
-                            break
+                            for cand_p in p_names_all:
+                                if cand_p and cand_p.lower() in t_content.lower():
+                                    prev_act = cand_p
+                                    break
+                            if prev_act:
+                                break
                     if prev_act:
                         synthetic_line = f"Move {prev_act} to {request.message}"
                         user_requested_updates = extract_practice_time_updates(synthetic_line, [prev_act])
@@ -591,16 +1005,21 @@ def chat_assistant(request: ChatRequest, user_id: int = Depends(get_current_user
                 )
         t_rag = time.perf_counter() - t_rag_start
 
+        # Authenticated Wearable Telemetry Context Injection
+        from src.perception.wearable_interface import WearableTelemetryManager
+        telemetry_summary = WearableTelemetryManager.get_user_telemetry_summary(user_id)
+        telemetry_prompt_block = "\n" + WearableTelemetryManager.format_telemetry_for_prompt(telemetry_summary) + "\n"
 
         system_prompt = (
             "You are a warm, wise traditional Ayurvedic physician (Vaidya).\n\n"
             "YOUR CONTEXT:\n"
             f"- SYSTEM CLOCK: The current time is {time.strftime('%Y-%m-%d %H:%M:%S')}.\n"
             f"- AUTHENTICATED USER ID: {user_id}\n"
-            "- WELLNESS VAULT: Access to user's Assessment Data, Adherence History, and Daily Schedule history.\n"
+            "- WELLNESS VAULT: Access to user's Assessment Data, Adherence History, Daily Schedule, and Synced Smartwatch Biometrics.\n"
             "- GUIDELINE: Keep internal reasoning concise and output direct, empathetic markdown advice.\n\n"
             f"{q_text}\n"
             f"{routine_summary}\n"
+            f"{telemetry_prompt_block}\n"
             "AUTHENTIC AYURVEDIC & YOGIC KNOWLEDGE BASE:\n" + guidelines_text +
             precheck_prompt_block +
             "\n\nINSTRUCTIONS & PROTOCOLS:\n"
@@ -621,7 +1040,15 @@ def chat_assistant(request: ChatRequest, user_id: int = Depends(get_current_user
             "   - IF THE REQUESTED TIME VIOLATES PRINCIPLES: Do NOT approve the requested time. Explain the physiological reason warmly (e.g., practicing Pranayama or bathing right after a meal disrupts Samana Vayu and Jatharagni during the Kapha stage of digestion), recommend the best conflict-free alternative slot from the validator (e.g., 15-30 mins before dinner or 90-120 mins after dinner), and ask: 'I recommend scheduling [Activity Name] at **[Safe Alternative Time]** instead. Would you like me to confirm and update your daily routine to **[Safe Alternative Time]**? (Reply **Yes** to accept this recommended time, or **No** to keep your current schedule unchanged.)' and append [RECALIBRATE].\n"
             "   - Do NOT claim that the schedule has already been updated, synchronized, or rescheduled. It is ONLY updated after the user explicitly confirms.\n"
             "   - NEVER reschedule or modify unrelated activities (such as Trataka / Reflection) unless the user specifically asked for them.\n"
-            "4. Maintain an empathetic, authoritative, and encouraging clinical tone."
+            "4. Maintain an empathetic, authoritative, and encouraging clinical tone.\n"
+            "5. WEARABLE TELEMETRY & PHYSICAL ACTIVITY PROTOCOL:\n"
+            "   - When asked if you monitor physical activity, biometrics, heart rate, steps, SpO2, or sleep, answer truthfully and affirmatively based on the VERIFIED WEARABLE TELEMETRY section above.\n"
+            "   - You DO monitor their physical activity, heart rate, blood oxygen, and steps via their connected smartwatch (synced through Android Health Connect).\n"
+            "   - If telemetry data is available in your context, report the exact values, metric units, measurement times, and source provenance (e.g., Fastrack Noir Charm via Health Connect).\n"
+            "   - For steps: Report today's step count accurately with the recorded date.\n"
+            "   - For sleep: If sleep data is marked unavailable / awaiting overnight cycle, explain clearly that sleep tracking requires wearing the watch through an overnight sleep cycle, without fabricating hours or claiming you lack all wearable access.\n"
+            "   - For stress: If marked unavailable / unsupported by the device hardware, state clearly that their device hardware does not provide real-time stress telemetry and do NOT invent or guess a stress level from heart rate.\n"
+            "   - Never claim you cannot access or monitor biometrics when telemetry records exist in your context."
         )
 
         messages = [{"role": "system", "content": system_prompt}]
@@ -778,14 +1205,27 @@ def chat_assistant(request: ChatRequest, user_id: int = Depends(get_current_user
 
         t_pre = state.get("schedule_timestamp", 0)
         t_llm_start = time.perf_counter()
-        chat_res = gateway.execute_tool_loop(
-            messages=messages,
-            tools=AVAILABLE_PLANNER_TOOLS,
-            tool_executor_fn=bound_tool_executor,
-            max_steps=3
-        )
-        t_llm = time.perf_counter() - t_llm_start
-        full_response = chat_res.content.strip()
+        trace_events: List[Dict[str, Any]] = []
+        is_fallback_response = False
+        chat_res = None
+        try:
+            chat_res = gateway.execute_tool_loop(
+                messages=messages,
+                tools=AVAILABLE_PLANNER_TOOLS,
+                tool_executor_fn=bound_tool_executor,
+                max_steps=3,
+                trace_events=trace_events,
+                on_event=on_event
+            )
+            t_llm = time.perf_counter() - t_llm_start
+            full_response = chat_res.content.strip()
+            is_fallback_response = getattr(chat_res, "is_fallback", False)
+        except Exception as loop_err:
+            from src.llm_gateway import sanitize_secret_log
+            logger.error(f"LLM tool execution loop failed for user {user_id}: {sanitize_secret_log(str(loop_err))}")
+            t_llm = time.perf_counter() - t_llm_start
+            full_response = ""
+            is_fallback_response = True
 
         # Deterministic guardrail enforcement if LLM returned empty or failed to reject a contraindicated request
         if precheck_eval and not precheck_eval["is_valid"]:
@@ -826,12 +1266,14 @@ def chat_assistant(request: ChatRequest, user_id: int = Depends(get_current_user
                 )
             else:
                 full_response = (
-                    "### Welcome to Vaidya AI Clinical Guidance\n\n"
-                    "Based on your constitutional assessment and classical Ayurvedic principles:\n\n"
-                    "- **Morning Phase**: Maintaining consistent wake times near **Brahma Muhurta**.\n"
-                    "- **Midday Phase**: Prioritizing nourishing meals during peak **Jatharagni**.\n"
-                    "- **Evening Phase**: Engaging in calming, grounding practices before rest.\n\n"
-                    "How can I help adapt your Dinacharya schedule today? 🙏"
+                    "### Vaidya AI Clinical Guidance\n\n"
+                    "I am currently operating in resilient offline guidance mode due to temporary provider latency. "
+                    "Your routine, assessment profile, and synced smartwatch biometrics remain safely preserved.\n\n"
+                    "Based on your constitutional balance:\n"
+                    "- **Morning Phase**: Grounding routines and hydration during Brahma Muhurta.\n"
+                    "- **Midday Phase**: Mindful nutrition aligned with peak digestive Agni.\n"
+                    "- **Evening Phase**: Gentle wind-down to pacify accumulated doshic excitation.\n\n"
+                    "Please check your current scheduled practices in the Daily Routine tab. 🙏"
                 )
         
         # Check if any tool in the loop successfully mutated the canonical schedule
@@ -874,34 +1316,59 @@ def chat_assistant(request: ChatRequest, user_id: int = Depends(get_current_user
         if active_proposal:
             target_p = active_proposal["target_practice"]
             target_slot = active_proposal["proposed_time_slot"]
-            if target_slot not in full_response:
+
+            # Check if full_response already contains the proposed slot (handling en-dash, em-dash, and 12h formats)
+            norm_resp = re.sub(r"[–—]", "-", full_response)
+            norm_target_slot = re.sub(r"[–—]", "-", target_slot)
+            already_described = (norm_target_slot in norm_resp)
+            if not already_described:
+                from src.safety.guardrails import _parse_slot_minutes
+                parsed_target = _parse_slot_minutes(target_slot, 15)
+                if parsed_target:
+                    st_h = parsed_target[0] // 60
+                    st_m = parsed_target[0] % 60
+                    period = "PM" if st_h >= 12 else "AM"
+                    h12 = st_h % 12 or 12
+                    t12_str = f"{h12}:{st_m:02d} {period}"
+                    t12_compact = f"{h12}:{st_m:02d}{period.lower()}"
+                    if t12_str.lower() in full_response.lower() or t12_compact in full_response.lower().replace(" ", ""):
+                        already_described = True
+                    ext_resp_updates = extract_practice_time_updates(full_response, [target_p])
+                    if ext_resp_updates and ext_resp_updates.get(target_p) == target_slot:
+                        already_described = True
+
+            if not already_described:
                 full_response += (
                     f"\n\nI recommend scheduling **{target_p}** at **{target_slot}**. "
                     f"Would you like me to confirm and update your daily routine? "
                     f"(Reply **Yes** to accept, or **No** to keep your current schedule.)"
                 )
 
-        db.save_chat_message(user_id, "assistant", full_response)
+        msg_id = db.save_chat_message(user_id, "assistant", full_response)
         t_total = time.perf_counter() - t_start
 
+        model_name = chat_res.model_used if chat_res is not None else "deterministic-fallback"
+        is_fb = chat_res.is_fallback if chat_res is not None else is_fallback_response
         logger.info(
             f"[/api/chat timing user={user_id}] Total={t_total:.2f}s | RAG={t_rag:.3f}s | "
-            f"Safety={t_guard:.3f}s | LLM={t_llm:.2f}s | Model={chat_res.model_used} | Fallback={chat_res.is_fallback}"
+            f"Safety={t_guard:.3f}s | LLM={t_llm:.2f}s | Model={model_name} | Fallback={is_fb}"
         )
         
         return {
+            "message_id": msg_id,
             "response": full_response, 
             "proposal": active_proposal,
             "proposed_schedule": proposed_schedule,
             "schedule_updated": schedule_was_updated,
+            "trace_events": trace_events,
             "timestamp": time.time(),
             "timings": {
                 "total_seconds": round(t_total, 2),
                 "rag_seconds": round(t_rag, 3),
                 "safety_seconds": round(t_guard, 3),
                 "llm_seconds": round(t_llm, 2),
-                "model_used": chat_res.model_used,
-                "is_fallback": chat_res.is_fallback
+                "model_used": model_name,
+                "is_fallback": is_fb
             }
         }
 
@@ -912,13 +1379,100 @@ def chat_assistant(request: ChatRequest, user_id: int = Depends(get_current_user
             "Please rest assured your daily routine is preserved. For your constitution, continue focusing on warm hydration, "
             "regular meal timings, and restorative rest. 🙏"
         )
+        fb_msg_id = db.save_chat_message(user_id, "assistant", fallback_msg)
         return {
+            "message_id": fb_msg_id,
             "response": fallback_msg,
             "proposal": None,
             "proposed_schedule": None,
             "schedule_updated": False,
+            "trace_events": [],
             "timestamp": time.time()
         }
+
+
+@app.post("/api/chat", response_model=Dict[str, Any])
+def chat_assistant(request: ChatRequest, user_id: int = Depends(get_current_user)):
+    """
+    Standard chat endpoint returning response and structured agent execution traces.
+    """
+    return _run_chat_engine(request, user_id)
+
+
+@app.post("/api/chat/stream")
+def chat_stream(request: ChatRequest, user_id: int = Depends(get_current_user)):
+    """
+    Live streaming SSE endpoint providing incremental agent lifecycle visibility,
+    real-time tool calling events, durations, and final clinical recommendations.
+    """
+    import queue
+    import threading
+
+    event_queue: queue.Queue = queue.Queue()
+
+    def on_event(evt: Dict[str, Any]):
+        event_queue.put({"type": "trace", **evt})
+
+    def run_worker():
+        try:
+            res = _run_chat_engine(request, user_id, on_event=on_event)
+            event_queue.put({"type": "final_response", **res})
+        except Exception as exc:
+            logger.error(f"Error in chat stream worker for user {user_id}: {exc}")
+            event_queue.put({
+                "type": "error",
+                "response": "Namaste. I am currently experiencing network latency connecting to the reasoning cluster. Your routine remains safe and preserved. Please try again shortly. 🙏"
+            })
+        finally:
+            event_queue.put(None)
+
+    threading.Thread(target=run_worker, daemon=True).start()
+
+    def sse_generator():
+        while True:
+            item = event_queue.get()
+            if item is None:
+                break
+            yield f"data: {json.dumps(item)}\n\n"
+
+    return StreamingResponse(
+        sse_generator(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache, no-transform",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no"
+        }
+    )
+
+
+
+# --- Phase 5 & 6: Adherence & Activity Lifecycle Endpoints ---
+
+@app.post("/api/adherence/evaluate", response_model=Dict[str, Any])
+def evaluate_adherence_endpoint(user_id: int = Depends(get_current_user)):
+    """
+    Evaluates telemetry and adherence for the authenticated user, automatically verifying
+    wearable completion (Active Shathapavali), flagging missed practices, scheduling safe compensations,
+    and generating deduplicated in-app notifications.
+    """
+    from src.planning.adherence_evaluator import evaluate_user_telemetry_and_adherence
+    return evaluate_user_telemetry_and_adherence(user_id)
+
+
+@app.get("/api/activities/today", response_model=Dict[str, Any])
+def get_today_activities_endpoint(user_id: int = Depends(get_current_user)):
+    """
+    Retrieves the authenticated user's persistent activity lifecycle states for today.
+    """
+    target_date = datetime.now().strftime("%Y-%m-%d")
+    activities = db.get_user_activities(user_id, date_str=target_date)
+    return {
+        "user_id": user_id,
+        "date": target_date,
+        "activities": activities,
+        "count": len(activities)
+    }
 
 
 # --- Notifications Endpoints ---

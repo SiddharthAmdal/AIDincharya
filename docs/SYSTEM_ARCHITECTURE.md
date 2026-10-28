@@ -234,10 +234,14 @@ flowchart LR
 
 | Architecture Layer | Pattern | Guarantee |
 | :--- | :--- | :--- |
-| **API Gateway** | RESTful with Pydantic Schema Validation | Strict input typing, structured errors, CORS containment. |
+| **API Gateway** | RESTful with Pydantic Schema Validation & SSE | Strict input typing, structured errors, real-time tool execution traces. |
 | **Authentication** | Token-Based Session Management | Session revocation, PBKDF2/bcrypt password hashing, multi-tenant user isolation. |
+| **Wearable Ingestion** | Android Health Connect Bridge + Batch Sync | Continuous HR, HRV, sleep stage, and SpO2 capture with device provenance. |
+| **Step Aggregation** | Canonical 4-Layer Deduplication | Mathematical consistency across DB, API, agent tools, and frontend metrics. |
 | **Clinical Safety** | Symbolic Priority -1 Guardrail | Deterministic emergency interception preceding all AI generation. |
 | **Agent Planning** | Two-Phase Confirmation Protocol | No schedule state mutations occur without explicit human confirmation. |
+| **Schedule Mutations** | Subtype-Aware Conflict Resolver | Independent subtype rescheduling (e.g. Nadi Shodhana vs Sitali) and digestive window protection. |
+| **Task Lifecycle** | Premature Completion Gating | Prohibits marking tasks complete ahead of their scheduled window (>15 min buffer). |
 | **RAG Knowledge Base** | Vector Semantic Retrieval + Cosine Distance Gate | Strict source grounding against classical texts; abstention on out-of-scope queries. |
-| **LLM Resilience** | Gateway with Deterministic Fallback | Zero total service outage during upstream LLM latency or network failures. |
+| **LLM Resilience** | Multi-Tier Gateway with Offline Fallback | Zero total service outage during upstream LLM latency or network failures. |
 | **Notifications** | Dual-Channel (In-App + Web Push) | Background delivery without active browser tabs; idempotent delivery without duplicate records. |

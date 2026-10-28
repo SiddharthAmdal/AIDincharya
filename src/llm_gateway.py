@@ -34,6 +34,35 @@ class LLMResponse:
     tokens_in: int = 0
     tokens_out: int = 0
     latency_s: float = 0.0
+def sanitize_secret_log(text: str) -> str:
+    """Sanitizes sensitive tokens, API keys, and credentials from log messages."""
+    if not text:
+        return ""
+    cleaned = re.sub(r'nvapi-[a-zA-Z0-9_\-]{8,}', 'nvapi-***REDACTED***', str(text))
+    cleaned = re.sub(r'AIza[a-zA-Z0-9_\-]{8,}', 'AIza***REDACTED***', cleaned)
+    cleaned = re.sub(r'Bearer\s+[a-zA-Z0-9_\-\.]{10,}', 'Bearer ***REDACTED***', cleaned)
+    cleaned = re.sub(r'(api_key|apikey|token|password)=["\']?[a-zA-Z0-9_\-\.]{6,}["\']?', r'\1=***REDACTED***', cleaned, flags=re.IGNORECASE)
+    return cleaned
+
+
+def categorize_failure(exc: Exception) -> str:
+    """Categorizes provider failure into standard diagnostic codes."""
+    msg = str(exc).lower()
+    if isinstance(exc, APITimeoutError) or "timeout" in msg or "timed out" in msg:
+        return "TIMEOUT"
+    if any(term in msg for term in ("unauthorized", "401", "forbidden", "403", "invalid api key", "authentication")):
+        return "AUTH_ERROR"
+    if any(term in msg for term in ("not found", "404", "model_not_found", "unknown model")):
+        return "MODEL_NOT_FOUND"
+    if isinstance(exc, RateLimitError) or any(term in msg for term in ("429", "rate limit", "too many requests", "quota exceeded")):
+        return "RATE_LIMIT"
+    if isinstance(exc, InternalServerError) or any(term in msg for term in ("500", "502", "503", "504", "bad gateway", "service unavailable")):
+        return "SERVER_ERROR"
+    if isinstance(exc, APIConnectionError) or any(term in msg for term in ("connection refused", "connection error", "network unreachable")):
+        return "CONNECTION_ERROR"
+    if "json" in msg or "expecting value" in msg:
+        return "PARSE_ERROR"
+    return "PROVIDER_ERROR"
 
 
 class LLMGateway:
@@ -116,12 +145,16 @@ class LLMGateway:
         return cls._instance
 
     def _is_retryable(self, exc: Exception) -> bool:
-        msg = str(exc).lower()
-        # Permanent errors: 401 unauthorized, 403 forbidden, 404 not found, 410 gone, invalid argument
-        if any(term in msg for term in ("unauthorized", "401", "forbidden", "403", "not found", "404", "model_not_found", "invalid_argument", "410", "gone")):
+        category = categorize_failure(exc)
+        if category in ("AUTH_ERROR", "MODEL_NOT_FOUND"):
             return False
+        if category in ("TIMEOUT", "RATE_LIMIT", "SERVER_ERROR", "CONNECTION_ERROR"):
+            return True
         if isinstance(exc, (APITimeoutError, APIConnectionError, RateLimitError, InternalServerError)):
             return True
+        msg = str(exc).lower()
+        if any(term in msg for term in ("unauthorized", "401", "forbidden", "403", "not found", "404", "model_not_found", "invalid_argument", "410", "gone")):
+            return False
         return any(term in msg for term in ("timeout", "rate limit", "too many requests", "quota", "503", "502", "500", "429", "connection"))
 
     def create_chat_completion(
@@ -139,6 +172,7 @@ class LLMGateway:
         Executes a chat completion with automatic 3-tier model/provider fallback, bounded retries,
         and an end-to-end request budget preventing client-side timeouts.
         """
+        import random
         models_to_try = [model or self.primary_model]
         if self.fallback_model and self.fallback_model not in models_to_try:
             models_to_try.append(self.fallback_model)
@@ -159,6 +193,8 @@ class LLMGateway:
                 break
 
             is_fallback = (idx > 0) or (target_model in (self.fallback_model, self.third_fallback_model))
+            provider_tag = "Google AI Studio" if self._is_gemini_model(target_model) else ("NVIDIA NIM" if target_model.startswith("nvidia") else "Primary Provider")
+
             for attempt in range(1, retries_per_model + 1):
                 remaining_attempt = total_deadline - time.perf_counter()
                 if remaining_attempt <= 1.0:
@@ -216,24 +252,55 @@ class LLMGateway:
                 except Exception as exc:
                     elapsed = time.perf_counter() - start_time
                     last_error = exc
+                    category = categorize_failure(exc)
+                    safe_msg = sanitize_secret_log(str(exc))
+
                     logger.warning(
-                        f"LLM request failed on model '{target_model}' (attempt {attempt}/{retries_per_model}) in {elapsed:.2f}s: {exc}"
+                        f"[NIM Diagnostic] Provider={provider_tag} Model={target_model} Category={category} "
+                        f"Attempt={attempt}/{retries_per_model} Elapsed={elapsed:.2f}s Details={safe_msg}"
                     )
-                    # If current model timed out and a fallback model exists, fail over immediately
-                    if (isinstance(exc, APITimeoutError) or "timeout" in str(exc).lower()) and (idx + 1 < len(models_to_try)):
+
+                    # Immediate failover for non-retryable errors (401, 403, 404, invalid model)
+                    if not self._is_retryable(exc):
+                        logger.info(f"Non-retryable {category} on model '{target_model}'. Failing over to next model.")
+                        break
+
+                    # Immediate failover on timeout if another model is available
+                    if category == "TIMEOUT" and (idx + 1 < len(models_to_try)):
                         logger.info(f"Model '{target_model}' timed out in {elapsed:.2f}s. Immediately failing over to '{models_to_try[idx+1]}'.")
                         break
 
-                    # If error is permanent/non-retryable (401, 403, 404, 410, invalid model), break immediately to next model
-                    if not self._is_retryable(exc):
-                        logger.info(f"Non-retryable error on model '{target_model}': {exc}. Failing over to next model.")
-                        break
-
                     if attempt < retries_per_model:
-                        sleep_s = min(0.5 * attempt, max(0.1, total_deadline - time.perf_counter() - 1.0))
+                        jitter = random.uniform(0.05, 0.25)
+                        sleep_s = min(1.5, max(0.1, (0.4 * (2 ** (attempt - 1))) + jitter))
+                        sleep_s = min(sleep_s, max(0.05, total_deadline - time.perf_counter() - 1.0))
                         time.sleep(sleep_s)
 
-        raise RuntimeError(f"All LLM models and retries exhausted. Last error: {last_error}")
+        raise RuntimeError(f"All LLM models and retries exhausted. Last error: {sanitize_secret_log(str(last_error))}")
+
+    @staticmethod
+    def _extract_json_candidate(text: str) -> Optional[str]:
+        """Safely extracts JSON from markdown fences, raw text, or reasoning content."""
+        if not text:
+            return None
+        text = text.strip()
+        # 1. Check for markdown code fences ```json ... ```
+        fence_match = re.search(r"```(?:json)?\s*([\s\S]*?)\s*```", text, flags=re.IGNORECASE)
+        if fence_match:
+            candidate = fence_match.group(1).strip()
+            if (candidate.startswith("{") and candidate.endswith("}")) or (candidate.startswith("[") and candidate.endswith("]")):
+                return candidate
+        # 2. Outermost JSON object { ... }
+        first_brace = text.find("{")
+        last_brace = text.rfind("}")
+        if first_brace != -1 and last_brace > first_brace:
+            return text[first_brace:last_brace + 1].strip()
+        # 3. Outermost JSON array [ ... ]
+        first_bracket = text.find("[")
+        last_bracket = text.rfind("]")
+        if first_bracket != -1 and last_bracket > first_bracket:
+            return text[first_bracket:last_bracket + 1].strip()
+        return None
 
     def generate_structured_json(
         self,
@@ -243,10 +310,10 @@ class LLMGateway:
         fallback_fn: Optional[Callable[[], Dict[str, Any]]] = None
     ) -> Tuple[Dict[str, Any], bool]:
         """
-        Generates structured JSON data with robust markdown fence removal and fallback handling.
+        Generates structured JSON data with robust extraction from markdown fences,
+        reasoning content, and outer brackets, plus deterministic fallback handling.
         Returns: (parsed_json_dict, is_fallback_boolean)
         """
-        # Ensure system prompt contains the JSON and concise reasoning guidance
         enhanced_messages = list(messages)
         if not any("json" in m.get("content", "").lower() for m in enhanced_messages if m.get("role") == "system"):
             enhanced_messages.insert(0, {
@@ -261,36 +328,21 @@ class LLMGateway:
                 temperature=temperature,
                 response_format={"type": "json_object"}
             )
-            raw = res.content.strip()
-            clean_json = raw
-
-            # Try extracting from markdown blocks first
-            if "```" in clean_json:
-                match = re.search(r"```(?:json)?\s*([\s\S]*?)\s*```", clean_json, flags=re.IGNORECASE)
-                if match:
-                    clean_json = match.group(1).strip()
+            raw = (res.content or "").strip()
             
-            # If not cleanly enclosed in braces, search for outermost JSON object
-            if not (clean_json.startswith("{") and clean_json.endswith("}")):
-                match = re.search(r"(\{[\s\S]*\})", clean_json)
-                if match:
-                    clean_json = match.group(1).strip()
-
-            # If content was empty or unparseable, check reasoning_content as secondary source
+            clean_json = self._extract_json_candidate(raw)
             if not clean_json and res.reasoning_content:
-                match = re.search(r"```(?:json)?\s*([\s\S]*?)\s*```", res.reasoning_content, flags=re.IGNORECASE)
-                if match:
-                    clean_json = match.group(1).strip()
-                else:
-                    match = re.search(r"(\{[\s\S]*\})", res.reasoning_content)
-                    if match:
-                        clean_json = match.group(1).strip()
+                clean_json = self._extract_json_candidate(res.reasoning_content)
+
+            if not clean_json:
+                clean_json = raw
 
             data = json.loads(clean_json)
             return data, res.is_fallback
 
         except Exception as exc:
-            logger.error(f"Failed to generate structured JSON: {exc}")
+            safe_err = sanitize_secret_log(str(exc))
+            logger.error(f"Failed to generate structured JSON: {safe_err}")
             if fallback_fn:
                 logger.info("Executing provided deterministic fallback function.")
                 return fallback_fn(), True
@@ -301,13 +353,47 @@ class LLMGateway:
         messages: List[Dict[str, Any]],
         tools: List[Dict[str, Any]],
         tool_executor_fn: Callable[[str, Dict[str, Any]], str],
-        max_steps: int = 3
+        max_steps: int = 3,
+        trace_events: Optional[List[Dict[str, Any]]] = None,
+        on_event: Optional[Callable[[Dict[str, Any]], None]] = None
     ) -> LLMResponse:
         """
         Executes a multi-step native tool calling loop until the model returns a final text response.
+        Optionally records observable agent execution trace events and invokes on_event in real-time.
         """
         history = list(messages)
         active_model = self.primary_model
+
+        friendly_tool_names = {
+            "get_user_telemetry": "Accessing Wearable Biometrics Vault",
+            "get_user_telemetry_reading": "Retrieving Real-Time Biometric Reading",
+            "get_telemetry_history_range": "Querying Telemetry History Range",
+            "compare_telemetry_periods": "Comparing Telemetry Across Periods",
+            "get_activity_completion_evidence": "Verifying Smartwatch Interval Evidence",
+            "review_schedule_adherence": "Reviewing Longitudinal Schedule Adherence",
+            "query_ayurvedic_knowledge": "Consulting Classical Ayurvedic Knowledge Base",
+            "get_current_schedule": "Reading Active Daily Routine",
+            "validate_clinical_safety": "Validating Circadian & Digestive Principles",
+            "propose_schedule_adaptation": "Formulating Clinical Schedule Adaptation",
+            "persist_schedule_adaptation": "Persisting Routine Update to Vault",
+            "get_adherence_history": "Reading Completion History & Nudges",
+            "check_calendar_conflicts": "Checking Busy Calendar Events"
+        }
+
+        def _emit(evt: Dict[str, Any]):
+            if trace_events is not None:
+                trace_events.append(evt)
+            if on_event is not None:
+                try:
+                    on_event(evt)
+                except Exception as emit_err:
+                    logger.debug(f"on_event handler error: {emit_err}")
+
+        _emit({
+            "stage": "understanding_question",
+            "message": "Analyzing question, constitutional context, and biometric constraints",
+            "timestamp": time.time()
+        })
 
         for step in range(max_steps):
             res = self.create_chat_completion(
@@ -324,10 +410,14 @@ class LLMGateway:
 
             # If no tool calls were requested, return final response
             if not res.tool_calls:
+                _emit({
+                    "stage": "preparing_response",
+                    "message": "Synthesizing evidence-based Ayurvedic clinical recommendations",
+                    "timestamp": time.time()
+                })
                 return res
 
             # Tool call requested: record assistant turn with tool calls
-            first_tool = res.tool_calls[0]
             assistant_turn = {
                 "role": "assistant",
                 "content": res.content,
@@ -354,12 +444,58 @@ class LLMGateway:
                 except Exception:
                     fn_args = {"raw_arguments": tc.function.arguments}
 
+                friendly_name = friendly_tool_names.get(fn_name, fn_name.replace('_', ' ').title())
+
+                safe_args = {k: v for k, v in fn_args.items() if k not in ("password", "token")}
+                _emit({
+                    "stage": "tool_call_start",
+                    "tool": fn_name,
+                    "friendly_name": friendly_name,
+                    "args": safe_args,
+                    "timestamp": time.time()
+                })
+
                 logger.info(f"Dispatching tool '{fn_name}' with args {fn_args}")
+                t_tool_start = time.perf_counter()
                 try:
                     tool_output_str = tool_executor_fn(fn_name, fn_args)
+                    is_err = "error" in tool_output_str[:50].lower()
                 except Exception as t_err:
                     logger.error(f"Tool '{fn_name}' execution threw exception: {t_err}")
                     tool_output_str = json.dumps({"error": f"Tool execution failed: {str(t_err)}"})
+                    is_err = True
+
+                duration_ms = round((time.perf_counter() - t_tool_start) * 1000.0, 1)
+
+                # Create concise summary for UI
+                summary_text = "Completed successfully"
+                try:
+                    parsed_out = json.loads(tool_output_str)
+                    if isinstance(parsed_out, dict):
+                        if "total_steps" in parsed_out:
+                            summary_text = f"{parsed_out['total_steps']} steps verified"
+                        elif "reading" in parsed_out:
+                            r_val = parsed_out["reading"].get("value")
+                            r_unit = parsed_out["reading"].get("unit", "")
+                            summary_text = f"Latest reading: {r_val} {r_unit}"
+                        elif "is_evidence_sufficient" in parsed_out:
+                            summary_text = f"Steps: {parsed_out.get('interval_steps_measured')} (Threshold met: {parsed_out['is_evidence_sufficient']})"
+                        elif "trend_direction" in parsed_out:
+                            summary_text = f"Trend: {parsed_out['trend_direction']} ({parsed_out['percent_change']}%)"
+                        elif "error" in parsed_out:
+                            summary_text = f"Notice: {parsed_out['error']}"
+                except Exception:
+                    pass
+
+                _emit({
+                    "stage": "tool_call_complete",
+                    "tool": fn_name,
+                    "friendly_name": friendly_name,
+                    "status": "error" if is_err else "success",
+                    "summary": summary_text,
+                    "duration_ms": duration_ms,
+                    "timestamp": time.time()
+                })
 
                 history.append({
                     "role": "tool",

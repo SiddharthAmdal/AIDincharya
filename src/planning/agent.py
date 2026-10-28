@@ -17,6 +17,8 @@ from src.planning.tools import (
 )
 from src.llm_gateway import LLMGateway
 import src.database.db as db
+from src.planning.practice_catalog import select_personalized_practices, CANDIDATE_PRACTICES
+from src.planning.provenance import DecisionProvenanceTracker
 
 # Set up logger
 logging.basicConfig(level=logging.INFO)
@@ -30,14 +32,17 @@ def standardize_slot(slot_str: str) -> str:
     """Standardizes time slots into strict 24-hour HH:MM - HH:MM format."""
     if not slot_str or not isinstance(slot_str, str):
         return slot_str or "Flexible"
+    has_night = bool(re.search(r"\b(night|tonight|evening)\b", slot_str, re.IGNORECASE))
     parts = re.split(rf"\s*(?:{HYPHEN_CHARS}|to)\s*", slot_str.strip())
     if len(parts) == 2:
         def _to_24h(s):
             s = s.strip()
-            m = re.match(r"^(\d{1,2}):(\d{2})\s*(AM|PM|am|pm)?$", s)
+            m = re.match(r"^(\d{1,2}):(\d{2})\s*(AM|PM|am|pm)?", s, re.IGNORECASE)
             if not m:
                 return s
             h, mins, period = int(m.group(1)), m.group(2), m.group(3)
+            if not period and has_night and 1 <= h <= 11:
+                period = "PM"
             if period:
                 period = period.upper()
                 if period == "PM" and h < 12:
@@ -47,11 +52,16 @@ def standardize_slot(slot_str: str) -> str:
             return f"{h:02d}:{mins}"
 
         start_raw, end_raw = parts[0], parts[1]
-        end_period = re.search(r"(AM|PM|am|pm)$", end_raw, re.IGNORECASE)
-        start_period = re.search(r"(AM|PM|am|pm)$", start_raw, re.IGNORECASE)
+        end_period = re.search(r"(AM|PM|am|pm)", end_raw, re.IGNORECASE)
+        start_period = re.search(r"(AM|PM|am|pm)", start_raw, re.IGNORECASE)
         if end_period and not start_period:
             start_raw = f"{start_raw} {end_period.group(1)}"
         return f"{_to_24h(start_raw)} - {_to_24h(end_raw)}"
+    elif len(parts) == 1:
+        from src.safety.guardrails import _parse_slot_minutes, _format_minutes_to_slot
+        parsed = _parse_slot_minutes(slot_str, 15)
+        if parsed:
+            return _format_minutes_to_slot(parsed[0], parsed[1])
     return slot_str
 
 
@@ -118,6 +128,14 @@ def extract_practice_time_updates(text: str, practice_names: List[str]) -> Dict[
             if not re.search(pattern, line, re.IGNORECASE):
                 continue
 
+            # Subtype differentiation guard (e.g. cooling/exhalation vs balancing/breath)
+            p_nl = p_name.lower()
+            l_nl = line.lower()
+            if any(t in p_nl for t in ["cooling", "sheetali", "exhalation"]) and any(t in l_nl for t in ["balancing", "breath"]) and not any(t in l_nl for t in ["cooling", "sheetali", "exhalation"]):
+                continue
+            if any(t in p_nl for t in ["balancing", "breath"]) and any(t in l_nl for t in ["cooling", "sheetali", "exhalation"]) and not any(t in l_nl for t in ["balancing", "breath"]):
+                continue
+
             # Check if this practice is only mentioned as a reference anchor (e.g. "after your Nadi Shodhana Pranayama")
             ref_check = re.search(r"(?:\bafter|\bbefore|\bprior to|\bfollowing)\s+(?:your\s+)?" + f"({pattern})", line, re.IGNORECASE)
             if ref_check and not re.search(r"\b(?:propose|move|shift|update|reschedule|recommend)\s+(?:moving\s+)?[\*\_]*" + f"({pattern})", line, re.IGNORECASE):
@@ -150,11 +168,15 @@ def extract_practice_time_updates(text: str, practice_names: List[str]) -> Dict[
                         valid_slots.append(std_s)
                 slots = valid_slots
             if not slots:
-                # Check for single time mention like "at 7:30 PM" or "at 19:30" or "to 8 PM"
+                # Check for single time mention like "at 7:30 PM" or "at 19:30" or "to 8 PM" or "11:15 IN THE NIGHT"
                 singles = re.findall(single_time_regex, line_clean)
                 if singles:
+                    time_raw = singles[-1]
+                    has_night_indicator = bool(re.search(r"\b(?:night|tonight|evening|pm)\b", line_clean, re.IGNORECASE))
+                    if has_night_indicator and not re.search(r"\b(?:am|pm)\b", time_raw, re.IGNORECASE):
+                        time_raw = f"{time_raw} PM"
                     from src.safety.guardrails import _parse_slot_minutes, _format_minutes_to_slot
-                    parsed = _parse_slot_minutes(singles[-1], 15)
+                    parsed = _parse_slot_minutes(time_raw, 15)
                     if parsed:
                         slots = [_format_minutes_to_slot(parsed[0], parsed[1])]
 
@@ -178,6 +200,19 @@ def extract_practice_time_updates(text: str, practice_names: List[str]) -> Dict[
             updates[p_name] = best_slot
         elif fallback_slot:
             updates[p_name] = fallback_slot
+
+    if len(updates) > 1:
+        # Disambiguate when multiple practices (e.g. Pranayama subtypes) match common keywords
+        from src.planning.schedule_service import score_practice_match, get_stable_practice_id
+        scored = []
+        for act, slot in updates.items():
+            sc = score_practice_match(get_stable_practice_id(act), act, slot, text)
+            scored.append((sc, act, slot))
+        scored.sort(key=lambda x: x[0], reverse=True)
+        if scored and scored[0][0] > 0:
+            top_sc, top_act, top_slot = scored[0]
+            if len(scored) == 1 or top_sc > scored[1][0] + 20:
+                updates = {top_act: top_slot}
 
     return updates
 
@@ -409,10 +444,18 @@ USER PROFILE:
 - Active Vikriti Flags: Vata Aggravated: {profile.vikriti_flags.vata_aggravated}, Pitta Aggravated: {profile.vikriti_flags.pitta_aggravated}, Kapha Aggravated: {profile.vikriti_flags.kapha_aggravated}
 - Season: {context.season}
 
+AUTHENTIC AYURVEDIC GUIDELINES (from RAG Knowledge Base):
+{guidelines_text}
+
+STRUCTURED CANDIDATE PRACTICE RECOMMENDATIONS:
+- Morning Candidates: Abhyanga (warm sesame oil for Vata; coconut/brahmi for Pitta; dry herbal Udvartana for Kapha), Nadi Shodhana / Sheetali / Kapalabhati.
+- Midday Candidates: Mitahara tailored to dosha (warm snigdha root vegetables for Vata; cooling sweet-bitter for Pitta; light spiced mung for Kapha) followed by Vajrasana or Shathapavali stroll.
+- Evening Candidates: Warm soup/khichdi dinner, followed by Pada Abhyanga foot massage or Chandra Bhedana cooling breath.
+
 INSTRUCTIONS:
 1. Create a balanced daily routine with morning, midday, and evening blocks.
 2. Each practice must have a specific time slot, duration, description, and Ayurvedic rationale.
-3. Ground your recommendations in the retrieved guidelines above.
+3. Ground your recommendations in the retrieved guidelines and candidate recommendations above.
 4. Do NOT include tasks the user has already completed today.
 5. Adapt complexity: if '{complexity}', keep practices simple and few. If 'Advanced', include more specialized practices.
 
@@ -554,45 +597,15 @@ JSON STRUCTURE (Return ONLY valid JSON):
                     _apply_principle_validated_updates(state, updates)
                 return state
 
-        p = profile.prakriti
-        scores = {"vata": p.vata, "pitta": p.pitta, "kapha": p.kapha}
-        dominant = max(scores, key=scores.get)
-
-        if complexity == "Anchor Habits":
-            state["morning_block"] = [Practice(name="Brahma Muhurta Jagaran", time_slot="06:00 - 06:15", duration_minutes=15, description="Wake up at sunrise and drink a glass of warm water.", rationale="Waking up at a consistent hour is the single most effective anchor habit to settle Vata nervous system.")]
-            state["midday_block"] = [Practice(name="Mitahara Midday Meal", time_slot="12:30 - 13:00", duration_minutes=30, description="Take a warm, freshly cooked lunch. Sit in silence without screens.", rationale="Eating the largest meal when the sun is highest optimizes Agni (digestion) for all constitutions.")]
-            state["evening_block"] = [Practice(name="Sadhana Transition", time_slot="21:30 - 21:45", duration_minutes=15, description="Turn off screens and perform 5 minutes of deep breathing before sleep.", rationale="Calms the mind to facilitate deep restorative sleep and balances elevated Vata.")]
-        elif dominant == "vata" or profile.vikriti_flags.vata_aggravated:
-            state["morning_block"] = [
-                Practice(name="Brahma Muhurta Jagaran", time_slot="06:00 - 06:15", duration_minutes=15, description="Wake up gently. Sit quietly and consume warm water.", rationale="Stabilizes Vata's volatile nature."),
-                Practice(name="Abhyanga", time_slot="06:30 - 06:45", duration_minutes=15, description="Massage head and feet with warm sesame oil.", rationale="Warm sesame oil directly pacifies Vata's dry, cold qualities."),
-                Practice(name="Pranayama", time_slot="07:00 - 07:15", duration_minutes=15, description="Practice 10 minutes of Nadi Shodhana (alternate nostril breathing).", rationale="Nadi Shodhana balances the nervous system and Vata flow.")
-            ]
-            state["midday_block"] = [Practice(name="Mitahara (Heaviest Meal)", time_slot="12:00 - 12:40", duration_minutes=40, description="Eat a nutritious, freshly cooked meal. Avoid cold drinks.", rationale="Agni (digestive fire) peaks at midday, enabling maximum nutrient absorption.")]
-            state["evening_block"] = [
-                Practice(name="Light Early Dinner", time_slot="19:00 - 19:30", duration_minutes=30, description="Consume a light, warm soup or khichdi.", rationale="Light meals at night prevent heavy Kapha accumulations and support sleep."),
-                Practice(name="Trataka / Reflection", time_slot="21:30 - 21:45", duration_minutes=15, description="Dim lights, practice soft breathing, and prepare for rest.", rationale="Supports melatonin release and calms sensory organs.")
-            ]
-        elif dominant == "pitta" or profile.vikriti_flags.pitta_aggravated:
-            state["morning_block"] = [
-                Practice(name="Brahma Muhurta Jagaran", time_slot="05:30 - 05:45", duration_minutes=15, description="Wake up early before sunrise to capture cool morning energy.", rationale="Prevents overheating and early morning irritation."),
-                Practice(name="Pranayama (Sheetali)", time_slot="06:30 - 06:45", duration_minutes=15, description="Practice Sheetali (cooling breath) to clear internal heat.", rationale="Sheetali breath is traditionally used to draw out excess Pitta heat.")
-            ]
-            state["midday_block"] = [Practice(name="Mitahara (Heaviest Meal)", time_slot="12:00 - 12:40", duration_minutes=40, description="Eat a nutritious, freshly cooked meal. Avoid cold drinks.", rationale="Agni (digestive fire) peaks at midday, enabling maximum nutrient absorption.")]
-            state["evening_block"] = [
-                Practice(name="Light Early Dinner", time_slot="19:00 - 19:30", duration_minutes=30, description="Consume a light, warm soup or khichdi.", rationale="Light meals at night prevent heavy Kapha accumulations and support sleep."),
-                Practice(name="Trataka / Reflection", time_slot="21:30 - 21:45", duration_minutes=15, description="Dim lights, practice soft breathing, and prepare for rest.", rationale="Supports melatonin release and calms sensory organs.")
-            ]
-        else: # kapha
-            state["morning_block"] = [
-                Practice(name="Brahma Muhurta Jagaran", time_slot="05:00 - 05:15", duration_minutes=15, description="Wake up early. Do not sleep in past 6:00 AM.", rationale="Waking before the Kapha time of day (6 AM) prevents lethargy."),
-                Practice(name="Dry Brushing / Udvartana", time_slot="05:30 - 05:50", duration_minutes=20, description="Perform dry massage/brushing towards the heart.", rationale="Stimulates sluggish lymphatic flow and pacifies Kapha's cold, heavy qualities.")
-            ]
-            state["midday_block"] = [Practice(name="Mitahara (Heaviest Meal)", time_slot="12:00 - 12:40", duration_minutes=40, description="Eat a nutritious, freshly cooked meal. Avoid cold drinks.", rationale="Agni (digestive fire) peaks at midday, enabling maximum nutrient absorption.")]
-            state["evening_block"] = [
-                Practice(name="Light Early Dinner", time_slot="19:00 - 19:30", duration_minutes=30, description="Consume a light, warm soup or khichdi.", rationale="Light meals at night prevent heavy Kapha accumulations and support sleep."),
-                Practice(name="Trataka / Reflection", time_slot="21:30 - 21:45", duration_minutes=15, description="Dim lights, practice soft breathing, and prepare for rest.", rationale="Supports melatonin release and calms sensory organs.")
-            ]
+        # Select personalized candidate practices using explicit clinical scoring engine
+        selected_practices = select_personalized_practices(
+            profile=profile,
+            complexity=complexity,
+            completed_today=state.get("completed_today", [])
+        )
+        state["morning_block"] = selected_practices["morning_block"]
+        state["midday_block"] = selected_practices["midday_block"]
+        state["evening_block"] = selected_practices["evening_block"]
 
         # Apply any extracted time updates from user instruction if present (principle-validated)
         if user_inst:
@@ -895,11 +908,27 @@ JSON STRUCTURE (Return ONLY valid JSON):
             evening_block=final_state["evening_block"],
             timestamp=time.time()
         )
+        
+        # Build Decision Provenance audit trail
+        provenance_trace = DecisionProvenanceTracker.generate_trace(
+            user_id=user_id,
+            profile=profile,
+            context=context,
+            complexity=complexity,
+            adherence_score=adherence_score,
+            schedule=schedule,
+            refinement_logs=final_state.get("refinement_logs", []),
+            is_fallback=final_state.get("is_fallback", False),
+            model_used=final_state.get("model_used", self.gateway.primary_model)
+        )
+        schedule.provenance = provenance_trace
+
         return {
             "schedule": schedule,
             "retrieved_guidelines": final_state.get("retrieved_guidelines", []),
             "is_fallback": final_state.get("is_fallback", False),
             "model_used": final_state.get("model_used", self.gateway.primary_model),
-            "refinement_logs": final_state.get("refinement_logs", [])
+            "refinement_logs": final_state.get("refinement_logs", []),
+            "provenance": provenance_trace
         }
 

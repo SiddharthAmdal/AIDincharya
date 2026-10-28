@@ -5,8 +5,8 @@ import requests
 BASE_URL = f"http://localhost:{os.getenv('PORT', '8000')}"
 res = requests.post(f"{BASE_URL}/api/auth/register", json={"username": "testuser_3_" + str(time.time()), "password": "password"})
 token = res.json()["token"]
-headers = {"Authorization": f"Bearer {token}"}
-requests.post(f"{BASE_URL}/api/user/questionnaire", json={"responses": {"q1": "vata", "q2": "pitta", "q3": "kapha"}}, headers=headers)
+answers_24 = {f"q{i}": ("vata" if i % 3 == 1 else "pitta" if i % 3 == 2 else "kapha") for i in range(1, 25)}
+requests.post(f"{BASE_URL}/api/user/questionnaire", json={"responses": answers_24}, headers=headers)
 
 payload_fever = {
     "user_id": "current",

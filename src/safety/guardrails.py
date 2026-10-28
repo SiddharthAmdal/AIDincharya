@@ -23,6 +23,8 @@ def _parse_slot_minutes(slot_str: str, default_duration: int = 15) -> Optional[T
     if s.lower() == "flexible":
         return None
 
+    has_night_keyword = bool(re.search(r"\b(night|tonight|evening)\b", s, re.IGNORECASE))
+
     def _to_min(part: str, fallback_period: Optional[str] = None) -> Optional[int]:
         part = part.strip()
         m = re.search(r"(\d{1,2}):(\d{2})\s*(AM|PM|am|pm)?", part)
@@ -34,6 +36,9 @@ def _parse_slot_minutes(slot_str: str, default_duration: int = 15) -> Optional[T
         else:
             h, mins = int(m.group(1)), int(m.group(2))
             period = m.group(3).upper() if m.group(3) else (fallback_period.upper() if fallback_period else None)
+
+        if not period and has_night_keyword and 1 <= h <= 11:
+            period = "PM"
 
         if period == "PM" and h < 12:
             h += 12

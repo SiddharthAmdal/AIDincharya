@@ -1,11 +1,16 @@
 import sqlite3
+from datetime import datetime
 import os
+import re
 import json
 import secrets
 import time
 import hashlib
 import bcrypt
+import logging
 from typing import Dict, Any, List, Optional
+
+logger = logging.getLogger("Database")
 
 DB_PATH = os.getenv("DINACHARYA_DB_PATH") or os.getenv("DATABASE_PATH") or os.path.join(os.path.dirname(__file__), "..", "..", "dinacharya.db")
 
@@ -70,6 +75,10 @@ def init_db():
     # Migration for existing DBs
     try:
         c.execute('ALTER TABLE user_state ADD COLUMN current_vikriti TEXT DEFAULT "{}"')
+    except sqlite3.OperationalError:
+        pass # Column already exists
+    try:
+        c.execute('ALTER TABLE user_state ADD COLUMN prakriti_profile TEXT DEFAULT "{}"')
     except sqlite3.OperationalError:
         pass # Column already exists
 
@@ -154,7 +163,108 @@ def init_db():
     ''')
     c.execute('CREATE INDEX IF NOT EXISTS idx_proposals_user_status ON schedule_proposals(user_id, status)')
     c.execute('CREATE INDEX IF NOT EXISTS idx_proposals_created ON schedule_proposals(created_at)')
+
+    # Longitudinal Vikriti observations table
+    c.execute('''
+        CREATE TABLE IF NOT EXISTS vikriti_observations (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id INTEGER NOT NULL,
+            symptoms TEXT DEFAULT '[]',
+            telemetry TEXT DEFAULT '{}',
+            estimate TEXT DEFAULT '{}',
+            confidence TEXT DEFAULT 'provisional',
+            data_status TEXT DEFAULT 'self_report_only',
+            timestamp REAL NOT NULL,
+            FOREIGN KEY (user_id) REFERENCES users (id)
+        )
+    ''')
+    c.execute('CREATE INDEX IF NOT EXISTS idx_vikriti_user_time ON vikriti_observations(user_id, timestamp)')
     
+    # Migration for existing DBs: ensure telemetry_records uniqueness is scoped per user
+    c.execute("SELECT sql FROM sqlite_master WHERE type='table' AND name='telemetry_records'")
+    t_row = c.fetchone()
+    if t_row and "record_id TEXT UNIQUE" in t_row[0]:
+        c.execute('''
+            CREATE TABLE telemetry_records_v2 (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                record_id TEXT NOT NULL,
+                user_id INTEGER NOT NULL,
+                metric_type TEXT NOT NULL,
+                metric_value REAL NOT NULL,
+                unit TEXT NOT NULL,
+                recorded_at REAL NOT NULL,
+                ingested_at REAL NOT NULL,
+                source_package TEXT NOT NULL,
+                device_model TEXT NOT NULL,
+                provenance TEXT NOT NULL,
+                FOREIGN KEY (user_id) REFERENCES users (id),
+                UNIQUE (user_id, record_id)
+            )
+        ''')
+        c.execute('''
+            INSERT OR IGNORE INTO telemetry_records_v2 
+            (id, record_id, user_id, metric_type, metric_value, unit, recorded_at, ingested_at, source_package, device_model, provenance)
+            SELECT id, record_id, user_id, metric_type, metric_value, unit, recorded_at, ingested_at, source_package, device_model, provenance
+            FROM telemetry_records
+        ''')
+        c.execute('DROP TABLE telemetry_records')
+        c.execute('ALTER TABLE telemetry_records_v2 RENAME TO telemetry_records')
+        c.execute('CREATE INDEX IF NOT EXISTS idx_telemetry_user_metric ON telemetry_records(user_id, metric_type)')
+        c.execute('CREATE INDEX IF NOT EXISTS idx_telemetry_user_recorded ON telemetry_records(user_id, recorded_at)')
+        c.execute('CREATE INDEX IF NOT EXISTS idx_telemetry_user_record ON telemetry_records(user_id, record_id)')
+
+    # Immutable Wearable Telemetry Records table (with deduplication on (user_id, record_id))
+    c.execute('''
+        CREATE TABLE IF NOT EXISTS telemetry_records (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            record_id TEXT NOT NULL,
+            user_id INTEGER NOT NULL,
+            metric_type TEXT NOT NULL,
+            metric_value REAL NOT NULL,
+            unit TEXT NOT NULL,
+            recorded_at REAL NOT NULL,
+            ingested_at REAL NOT NULL,
+            source_package TEXT NOT NULL,
+            device_model TEXT NOT NULL,
+            provenance TEXT NOT NULL,
+            aggregation_type TEXT DEFAULT 'interval',
+            FOREIGN KEY (user_id) REFERENCES users (id),
+            UNIQUE (user_id, record_id)
+        )
+    ''')
+    try:
+        c.execute("ALTER TABLE telemetry_records ADD COLUMN aggregation_type TEXT DEFAULT 'interval'")
+    except sqlite3.OperationalError:
+        pass
+    c.execute('CREATE INDEX IF NOT EXISTS idx_telemetry_user_metric ON telemetry_records(user_id, metric_type)')
+    c.execute('CREATE INDEX IF NOT EXISTS idx_telemetry_user_recorded ON telemetry_records(user_id, recorded_at)')
+    c.execute('CREATE INDEX IF NOT EXISTS idx_telemetry_user_record ON telemetry_records(user_id, record_id)')
+    c.execute('CREATE INDEX IF NOT EXISTS idx_telemetry_user_aggr ON telemetry_records(user_id, aggregation_type)')
+
+    # Activity Lifecycle table (Phase 5 - persistent activity tracking and adherence)
+    c.execute('''
+        CREATE TABLE IF NOT EXISTS activity_lifecycle (
+            id TEXT PRIMARY KEY,
+            user_id INTEGER NOT NULL,
+            schedule_date TEXT NOT NULL,
+            practice_name TEXT NOT NULL,
+            time_slot TEXT NOT NULL,
+            start_time_ts REAL NOT NULL,
+            end_time_ts REAL NOT NULL,
+            status TEXT NOT NULL,
+            completed_at REAL,
+            completion_source TEXT,
+            evidence_json TEXT DEFAULT '{}',
+            compensation_for_id TEXT,
+            created_at REAL NOT NULL,
+            updated_at REAL NOT NULL,
+            FOREIGN KEY (user_id) REFERENCES users (id)
+        )
+    ''')
+    c.execute('CREATE INDEX IF NOT EXISTS idx_activity_user_date ON activity_lifecycle(user_id, schedule_date)')
+    c.execute('CREATE INDEX IF NOT EXISTS idx_activity_user_status ON activity_lifecycle(user_id, status)')
+    c.execute('CREATE INDEX IF NOT EXISTS idx_activity_comp_for ON activity_lifecycle(compensation_for_id)')
+
     conn.commit()
     conn.close()
 
@@ -290,11 +400,19 @@ def revoke_session(token: str) -> bool:
 
 # --- State Methods ---
 
-def update_user_questionnaire(user_id, responses: Dict[str, Any]):
+def update_user_questionnaire(user_id, responses: Dict[str, Any], prakriti_profile: Optional[Dict[str, Any]] = None):
     conn = get_db_connection()
     c = conn.cursor()
-    c.execute('UPDATE user_state SET questionnaire_responses = ?, has_completed_onboarding = ? WHERE user_id = ?',
-              (json.dumps(responses), True, user_id))
+    prakriti_json = json.dumps(prakriti_profile or {})
+    # Reset last_schedule to NULL on questionnaire update so fresh personalized recommendations are generated
+    c.execute('''
+        UPDATE user_state 
+        SET questionnaire_responses = ?, 
+            prakriti_profile = ?, 
+            has_completed_onboarding = 1,
+            last_schedule = NULL
+        WHERE user_id = ?
+    ''', (json.dumps(responses), prakriti_json, user_id))
     conn.commit()
     conn.close()
 
@@ -310,11 +428,13 @@ def get_user_state(user_id) -> Dict[str, Any]:
         return {"username": urow["username"] if urow else ""}
     conn.close()
     
+    row_keys = row.keys()
     return {
         "username": row["username"] or "",
         "adherence_score": row["adherence_score"],
         "has_completed_onboarding": bool(row["has_completed_onboarding"]),
         "questionnaire_responses": json.loads(row["questionnaire_responses"] or '{}'),
+        "prakriti_profile": json.loads(row["prakriti_profile"] or '{}') if "prakriti_profile" in row_keys else {},
         "telemetry_baselines": json.loads(row["telemetry_baselines"] or '{}'),
         "current_vikriti": json.loads(row["current_vikriti"] or '{}'),
         "last_schedule": json.loads(row["last_schedule"] or 'null'),
@@ -322,25 +442,459 @@ def get_user_state(user_id) -> Dict[str, Any]:
         "schedule_date": row["schedule_date"]
     }
 
-def update_current_vikriti(user_id, telemetry: Dict[str, Any], symptoms: List[str]):
+def record_vikriti_observation(
+    user_id: int,
+    symptoms: List[str],
+    telemetry: Dict[str, Any],
+    estimate: Optional[Dict[str, Any]] = None,
+    confidence: str = "provisional",
+    data_status: str = "self_report_only"
+) -> int:
+    """
+    Appends a new observation record to the longitudinal vikriti_observations table.
+    """
+    conn = get_db_connection()
+    c = conn.cursor()
+    now = time.time()
+    c.execute('''
+        INSERT INTO vikriti_observations (user_id, symptoms, telemetry, estimate, confidence, data_status, timestamp)
+        VALUES (?, ?, ?, ?, ?, ?, ?)
+    ''', (
+        user_id,
+        json.dumps(symptoms or []),
+        json.dumps(telemetry or {}),
+        json.dumps(estimate or {}),
+        confidence,
+        data_status,
+        now
+    ))
+    obs_id = c.lastrowid
+    conn.commit()
+    conn.close()
+    return obs_id
+
+def get_vikriti_observations(user_id: int, limit: int = 7) -> List[Dict[str, Any]]:
+    """
+    Retrieves recent longitudinal Vikriti observations for a user in chronological order.
+    """
+    conn = get_db_connection()
+    c = conn.cursor()
+    c.execute('''
+        SELECT id, symptoms, telemetry, estimate, confidence, data_status, timestamp
+        FROM vikriti_observations
+        WHERE user_id = ?
+        ORDER BY timestamp DESC
+        LIMIT ?
+    ''', (user_id, limit))
+    rows = c.fetchall()
+    conn.close()
+    
+    result = []
+    for r in reversed(rows):
+        result.append({
+            "id": r["id"],
+            "symptoms": json.loads(r["symptoms"] or "[]"),
+            "telemetry": json.loads(r["telemetry"] or "{}"),
+            "estimate": json.loads(r["estimate"] or "{}"),
+            "confidence": r["confidence"],
+            "data_status": r["data_status"],
+            "timestamp": r["timestamp"]
+        })
+    return result
+
+def update_current_vikriti(user_id, telemetry: Dict[str, Any], symptoms: List[str], estimate: Optional[Dict[str, Any]] = None, confidence: str = "provisional", data_status: str = "self_report_only"):
     conn = get_db_connection()
     c = conn.cursor()
     vikriti_state = {
         "telemetry": telemetry,
-        "symptoms": symptoms
+        "symptoms": symptoms,
+        "estimate": estimate or {},
+        "confidence": confidence,
+        "data_status": data_status,
+        "updated_at": time.time()
     }
     c.execute('UPDATE user_state SET current_vikriti = ? WHERE user_id = ?',
               (json.dumps(vikriti_state), user_id))
     conn.commit()
     conn.close()
 
+    # Also store in longitudinal history
+    record_vikriti_observation(user_id, symptoms, telemetry, estimate, confidence, data_status)
+
+def save_telemetry_record(
+    user_id: int,
+    record_id: str,
+    metric_type: str,
+    metric_value: float,
+    unit: str,
+    recorded_at: float,
+    source_package: str = "com.google.android.apps.healthdata",
+    device_model: str = "Fastrack Noir Charm",
+    provenance: str = "health_connect_import",
+    aggregation_type: str = "interval"
+) -> bool:
+    """
+    Saves an immutable telemetry measurement with stable record_id deduplication.
+    Distinguishes interval records from cumulative daily totals or instantaneous readings.
+    Returns True if newly inserted, False if duplicate ignored.
+    """
+    conn = get_db_connection()
+    c = conn.cursor()
+    ingested_at = time.time()
+    try:
+        c.execute('''
+            INSERT INTO telemetry_records 
+            (record_id, user_id, metric_type, metric_value, unit, recorded_at, ingested_at, source_package, device_model, provenance, aggregation_type)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ''', (record_id, user_id, metric_type, float(metric_value), unit, float(recorded_at), ingested_at, source_package, device_model, provenance, aggregation_type))
+        conn.commit()
+        return True
+    except sqlite3.IntegrityError:
+        # Duplicate record_id safely ignored without error
+        return False
+    finally:
+        conn.close()
+
+def get_user_telemetry_records(user_id: int, metric_type: Optional[str] = None, limit: int = 50) -> List[Dict[str, Any]]:
+    """
+    Retrieves recent telemetry records for a user, preserving original timestamps, units, provenance, and aggregation type.
+    """
+    conn = get_db_connection()
+    c = conn.cursor()
+    if metric_type:
+        c.execute('''
+            SELECT id, record_id, metric_type, metric_value, unit, recorded_at, ingested_at, source_package, device_model, provenance, aggregation_type
+            FROM telemetry_records
+            WHERE user_id = ? AND metric_type = ?
+            ORDER BY recorded_at DESC LIMIT ?
+        ''', (user_id, metric_type, limit))
+    else:
+        c.execute('''
+            SELECT id, record_id, metric_type, metric_value, unit, recorded_at, ingested_at, source_package, device_model, provenance, aggregation_type
+            FROM telemetry_records
+            WHERE user_id = ?
+            ORDER BY recorded_at DESC LIMIT ?
+        ''', (user_id, limit))
+    rows = c.fetchall()
+    conn.close()
+    return [dict(r) for r in rows]
+
+def get_daily_steps(user_id: int, date_str: Optional[str] = None) -> int:
+    """
+    Calculates verified total daily steps for a given calendar day (default: today).
+    Delegates to the single canonical daily step aggregation service
+    (src.perception.step_aggregation.get_canonical_daily_steps).
+    """
+    from src.perception.step_aggregation import get_canonical_daily_steps
+    res = get_canonical_daily_steps(user_id=user_id, date_str=date_str)
+    return int(res.get("steps", 0))
+
+
+def get_interval_steps(user_id: int, start_ts: float, end_ts: float) -> int:
+    """
+    Calculates the exact number of steps taken strictly during a time window [start_ts, end_ts].
+    Phase 2 Semantics: Never infers interval steps from a daily cumulative total.
+    Only sums valid interval records. If only cumulative totals exist, returns 0.
+    """
+    conn = get_db_connection()
+    c = conn.cursor()
+    c.execute('''
+        SELECT SUM(metric_value) as step_sum
+        FROM telemetry_records
+        WHERE user_id = ? AND metric_type = 'steps'
+          AND aggregation_type != 'daily_total'
+          AND (metric_value < 1000 OR record_id LIKE '%-%')
+          AND provenance != 'synthetic'
+          AND record_id NOT LIKE '%loop%'
+          AND recorded_at >= ? AND recorded_at <= ?
+    ''', (user_id, start_ts, end_ts))
+    row = c.fetchone()
+    conn.close()
+    if row and row["step_sum"] is not None:
+        return int(row["step_sum"])
+    return 0
+
+
+def get_telemetry_window_summary(
+    user_id: int,
+    metric_type: str,
+    start_ts: float,
+    end_ts: float
+) -> Dict[str, Any]:
+    """
+    Retrieves statistical metrics for a specific window [start_ts, end_ts].
+    """
+    conn = get_db_connection()
+    c = conn.cursor()
+
+    if metric_type == "steps":
+        steps_total = get_interval_steps(user_id, start_ts, end_ts)
+        c.execute('''
+            SELECT COUNT(*) as count, MAX(recorded_at) as latest_ts
+            FROM telemetry_records
+            WHERE user_id = ? AND metric_type = 'steps'
+              AND (aggregation_type = 'interval' OR metric_value < 1000)
+              AND recorded_at >= ? AND recorded_at <= ?
+        ''', (user_id, start_ts, end_ts))
+        row = c.fetchone()
+        conn.close()
+        return {
+            "metric_type": "steps",
+            "count": row["count"] if row else 0,
+            "total_steps": steps_total,
+            "unit": "count",
+            "start_ts": start_ts,
+            "end_ts": end_ts,
+            "latest_ts": row["latest_ts"] if row and row["latest_ts"] else None
+        }
+
+    c.execute('''
+        SELECT COUNT(*) as count,
+               MIN(metric_value) as min_val,
+               MAX(metric_value) as max_val,
+               AVG(metric_value) as avg_val,
+               MAX(recorded_at) as latest_ts
+        FROM telemetry_records
+        WHERE user_id = ? AND metric_type = ?
+          AND recorded_at >= ? AND recorded_at <= ?
+    ''', (user_id, metric_type, start_ts, end_ts))
+    stats = c.fetchone()
+
+    latest_val = None
+    if stats and stats["latest_ts"]:
+        c.execute('''
+            SELECT metric_value, unit, provenance, source_package
+            FROM telemetry_records
+            WHERE user_id = ? AND metric_type = ? AND recorded_at = ?
+            LIMIT 1
+        ''', (user_id, metric_type, stats["latest_ts"]))
+        latest_row = c.fetchone()
+        if latest_row:
+            latest_val = {
+                "value": latest_row["metric_value"],
+                "unit": latest_row["unit"],
+                "provenance": latest_row["provenance"],
+                "source_package": latest_row["source_package"]
+            }
+
+    conn.close()
+    return {
+        "metric_type": metric_type,
+        "count": stats["count"] if stats else 0,
+        "min": round(stats["min_val"], 1) if stats and stats["min_val"] is not None else None,
+        "max": round(stats["max_val"], 1) if stats and stats["max_val"] is not None else None,
+        "avg": round(stats["avg_val"], 1) if stats and stats["avg_val"] is not None else None,
+        "latest": latest_val,
+        "latest_ts": stats["latest_ts"] if stats and stats["latest_ts"] else None,
+        "start_ts": start_ts,
+        "end_ts": end_ts
+    }
+
+# --- Phase 5: Activity Lifecycle & Adherence Persistence ---
+
+def sync_schedule_to_activity_lifecycle(
+    user_id: int,
+    schedule: Dict[str, Any],
+    date_str: str
+) -> List[Dict[str, Any]]:
+    """
+    Synchronizes a generated or active daily schedule into the persistent activity_lifecycle table.
+    Idempotent: Preserves existing completion status, evidence, or compensation links.
+    """
+    conn = get_db_connection()
+    c = conn.cursor()
+    created_activities = []
+    now = time.time()
+
+    sched_root = schedule.get("schedule", schedule) if isinstance(schedule, dict) else {}
+    for block_name in ["morning_block", "midday_block", "evening_block"]:
+        practices = sched_root.get(block_name, []) if isinstance(sched_root, dict) else []
+        for p in practices:
+            p_name = p.get("name") if isinstance(p, dict) else getattr(p, "name", "Practice")
+            slot = (p.get("time_slot") if isinstance(p, dict) else getattr(p, "time_slot", "08:00 - 08:30")) or "08:00 - 08:30"
+
+            # Parse start and end time to epoch timestamps
+            match = re.search(r"(\d{1,2}:\d{2})\s*-\s*(\d{1,2}:\d{2})", slot)
+            if match:
+                s_str, e_str = match.group(1), match.group(2)
+                try:
+                    s_ts = datetime.strptime(f"{date_str} {s_str}:00", "%Y-%m-%d %H:%M:%S").timestamp()
+                    e_ts = datetime.strptime(f"{date_str} {e_str}:00", "%Y-%m-%d %H:%M:%S").timestamp()
+                except Exception:
+                    s_ts, e_ts = now, now + 1800.0
+            else:
+                s_ts, e_ts = now, now + 1800.0
+
+            p_id = p.get("id") if isinstance(p, dict) else getattr(p, "id", None)
+            clean_p_id = re.sub(r'^prac_', '', str(p_id)) if p_id else None
+            clean_slug = re.sub(r'[^a-zA-Z0-9]+', '_', clean_p_id or p_name.lower()).strip('_')
+            act_id = f"act_{user_id}_{date_str}_{clean_slug}"
+
+            # Upsert preserving existing completion status
+            c.execute('''
+                INSERT INTO activity_lifecycle (
+                    id, user_id, schedule_date, practice_name, time_slot,
+                    start_time_ts, end_time_ts, status, created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, 'scheduled', ?, ?)
+                ON CONFLICT(id) DO UPDATE SET
+                    time_slot = excluded.time_slot,
+                    start_time_ts = excluded.start_time_ts,
+                    end_time_ts = excluded.end_time_ts,
+                    updated_at = excluded.updated_at
+            ''', (act_id, user_id, date_str, p_name, slot, s_ts, e_ts, now, now))
+            created_activities.append({"id": act_id, "practice_name": p_name, "time_slot": slot})
+
+    conn.commit()
+    conn.close()
+    return created_activities
+
+def get_user_activities(
+    user_id: int,
+    date_str: Optional[str] = None,
+    status: Optional[str] = None
+) -> List[Dict[str, Any]]:
+    """
+    Retrieves activity lifecycle records for a user on a given date (default: today).
+    """
+    conn = get_db_connection()
+    c = conn.cursor()
+    target_date = date_str or datetime.now().strftime("%Y-%m-%d")
+
+    query = 'SELECT * FROM activity_lifecycle WHERE user_id = ? AND schedule_date = ?'
+    params: List[Any] = [user_id, target_date]
+
+    if status:
+        query += ' AND status = ?'
+        params.append(status)
+
+    query += ' ORDER BY start_time_ts ASC'
+    c.execute(query, tuple(params))
+    rows = c.fetchall()
+    conn.close()
+
+    results = []
+    for r in rows:
+        item = dict(r)
+        if item.get("evidence_json"):
+            try:
+                item["evidence"] = json.loads(item["evidence_json"])
+            except Exception:
+                item["evidence"] = {}
+        results.append(item)
+    return results
+
+def get_activity_by_id(activity_id: str) -> Optional[Dict[str, Any]]:
+    """Retrieves an activity lifecycle record by its stable ID."""
+    conn = get_db_connection()
+    c = conn.cursor()
+    c.execute('SELECT * FROM activity_lifecycle WHERE id = ?', (activity_id,))
+    row = c.fetchone()
+    conn.close()
+    if not row:
+        return None
+    item = dict(row)
+    if item.get("evidence_json"):
+        try:
+            item["evidence"] = json.loads(item["evidence_json"])
+        except Exception:
+            item["evidence"] = {}
+    return item
+
+def update_activity_lifecycle(
+    activity_id: str,
+    status: str,
+    completed_at: Optional[float] = None,
+    completion_source: Optional[str] = None,
+    evidence: Optional[Dict[str, Any]] = None,
+    compensation_for_id: Optional[str] = None
+) -> bool:
+    """
+    Idempotent, transactional state transition for scheduled activities.
+    Supports: 'scheduled', 'due', 'completed_by_user', 'auto_completed_evidence',
+              'missed', 'skipped', 'compensation_proposed', 'compensation_scheduled',
+              'compensation_completed', 'cancelled'.
+    """
+    conn = get_db_connection()
+    c = conn.cursor()
+    now = time.time()
+    evidence_str = json.dumps(evidence) if evidence else '{}'
+
+    c.execute('''
+        UPDATE activity_lifecycle
+        SET status = ?,
+            completed_at = COALESCE(?, completed_at),
+            completion_source = COALESCE(?, completion_source),
+            evidence_json = CASE WHEN ? != '{}' THEN ? ELSE evidence_json END,
+            compensation_for_id = COALESCE(?, compensation_for_id),
+            updated_at = ?
+        WHERE id = ?
+    ''', (status, completed_at, completion_source, evidence_str, evidence_str, compensation_for_id, now, activity_id))
+    affected = c.rowcount
+    conn.commit()
+    conn.close()
+    return affected > 0
+
+def get_missed_activities(user_id: int, date_str: Optional[str] = None) -> List[Dict[str, Any]]:
+    """Retrieves all activities marked as missed on a given date."""
+    return get_user_activities(user_id, date_str=date_str, status='missed')
+
+def record_activity_compensation(
+    user_id: int,
+    original_activity_id: str,
+    compensation_practice: str,
+    time_slot: str,
+    start_ts: float,
+    end_ts: float,
+    rationale: str
+) -> str:
+    """
+    Schedules an evidence-based compensatory activity linked to an earlier missed activity.
+    Preserves provenance and original activity ID.
+    """
+    conn = get_db_connection()
+    c = conn.cursor()
+    now = time.time()
+    target_date = datetime.fromtimestamp(start_ts).strftime("%Y-%m-%d")
+    comp_id = f"comp_{original_activity_id}_{int(now)}"
+    evidence = {"rationale": rationale, "compensated_from": original_activity_id}
+
+    c.execute('''
+        INSERT INTO activity_lifecycle (
+            id, user_id, schedule_date, practice_name, time_slot,
+            start_time_ts, end_time_ts, status, completion_source,
+            evidence_json, compensation_for_id, created_at, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, 'compensation_scheduled', 'planner_compensation', ?, ?, ?, ?)
+    ''', (comp_id, user_id, target_date, compensation_practice, time_slot, start_ts, end_ts, json.dumps(evidence), original_activity_id, now, now))
+
+    # Mark original activity as compensation_scheduled
+    c.execute('''
+        UPDATE activity_lifecycle
+        SET status = 'compensation_scheduled', updated_at = ?
+        WHERE id = ?
+    ''', (now, original_activity_id))
+
+    conn.commit()
+    conn.close()
+    return comp_id
+
 def save_user_schedule(user_id, schedule: Dict[str, Any], date_str: str):
     conn = get_db_connection()
     c = conn.cursor()
-    c.execute('UPDATE user_state SET last_schedule = ?, schedule_timestamp = ?, schedule_date = ? WHERE user_id = ?',
-              (json.dumps(schedule), time.time(), date_str, user_id))
+    c.execute('''
+        INSERT INTO user_state (user_id, last_schedule, schedule_timestamp, schedule_date)
+        VALUES (?, ?, ?, ?)
+        ON CONFLICT(user_id) DO UPDATE SET
+            last_schedule = excluded.last_schedule,
+            schedule_timestamp = excluded.schedule_timestamp,
+            schedule_date = excluded.schedule_date
+    ''', (user_id, json.dumps(schedule), time.time(), date_str))
     conn.commit()
     conn.close()
+    try:
+        sync_schedule_to_activity_lifecycle(user_id, schedule, date_str)
+    except Exception as exc:
+        logger.warning(f"Failed to sync schedule to activity_lifecycle for user {user_id}: {exc}")
+
 
 def invalidate_user_schedule(user_id):
     conn = get_db_connection()
@@ -352,44 +906,297 @@ def invalidate_user_schedule(user_id):
 def update_adherence_score(user_id, score: float):
     conn = get_db_connection()
     c = conn.cursor()
-    c.execute('UPDATE user_state SET adherence_score = ? WHERE user_id = ?', (score, user_id))
+    c.execute(
+        """
+        INSERT INTO user_state (user_id, adherence_score) VALUES (?, ?)
+        ON CONFLICT(user_id) DO UPDATE SET adherence_score = excluded.adherence_score
+        """,
+        (user_id, score)
+    )
+    conn.commit()
+    conn.close()
+
+def save_user_state(user_id, state: Dict[str, Any]):
+    if not state:
+        return
+    conn = get_db_connection()
+    c = conn.cursor()
+    score = state.get("adherence_score", 0.0)
+    c.execute(
+        """
+        INSERT INTO user_state (user_id, adherence_score) VALUES (?, ?)
+        ON CONFLICT(user_id) DO UPDATE SET adherence_score = excluded.adherence_score
+        """,
+        (user_id, score)
+    )
     conn.commit()
     conn.close()
 
 # --- Chat Methods ---
 
-def save_chat_message(user_id, role, content):
+def save_chat_message(user_id, role, content) -> int:
     conn = get_db_connection()
     c = conn.cursor()
     c.execute('INSERT INTO chat_history (user_id, role, content) VALUES (?, ?, ?)', (user_id, role, content))
     conn.commit()
+    msg_id = c.lastrowid
     conn.close()
+    return msg_id
 
 def get_chat_history(user_id, limit=20):
     conn = get_db_connection()
     c = conn.cursor()
-    c.execute('SELECT role, content FROM chat_history WHERE user_id = ? ORDER BY timestamp DESC, id DESC LIMIT ?', (user_id, limit))
+    c.execute('SELECT id, role, content, timestamp FROM chat_history WHERE user_id = ? ORDER BY timestamp DESC, id DESC LIMIT ?', (user_id, limit))
     rows = c.fetchall()
     conn.close()
     # Reverse to get chronological order
-    return [{"role": row["role"], "content": row["content"]} for row in reversed(rows)]
+    return [{"id": row["id"], "role": row["role"], "content": row["content"], "timestamp": row["timestamp"]} for row in reversed(rows)]
+
 
 # --- Completion Methods ---
 
-def save_completion(user_id, practice_name):
+def save_completion(user_id: int, practice_name: str, date_str: Optional[str] = None) -> bool:
+    """
+    Saves a task completion for the user.
+    Idempotent: prevents duplicate records for the same practice on the same day.
+    Also synchronizes status to activity_lifecycle if matching record exists.
+    """
+    target_date = date_str or datetime.now().strftime("%Y-%m-%d")
+    now = time.time()
     conn = get_db_connection()
     c = conn.cursor()
-    c.execute('INSERT INTO completions (user_id, practice_name) VALUES (?, ?)', (user_id, practice_name))
+    
+    # Check if already recorded in completions table for target_date
+    c.execute(
+        'SELECT id FROM completions WHERE user_id = ? AND practice_name = ? AND completion_date = ?',
+        (user_id, practice_name, target_date)
+    )
+    already_saved = c.fetchone()
+    if not already_saved:
+        c.execute(
+            'INSERT INTO completions (user_id, practice_name, completion_date) VALUES (?, ?, ?)',
+            (user_id, practice_name, target_date)
+        )
+
+    # Sync to activity_lifecycle
+    c.execute(
+        """
+        UPDATE activity_lifecycle
+        SET status = 'completed_by_user', completed_at = ?, completion_source = 'manual_dashboard', updated_at = ?
+        WHERE user_id = ? AND schedule_date = ? 
+          AND (lower(practice_name) = lower(?) OR lower(practice_name) LIKE '%' || lower(?) || '%')
+          AND status NOT IN ('completed_by_user', 'auto_completed_evidence')
+        """,
+        (now, now, user_id, target_date, practice_name, practice_name)
+    )
+
+    conn.commit()
+    conn.close()
+    return True
+
+def complete_user_activity(
+    user_id: int,
+    activity_id_or_name: str,
+    date_str: Optional[str] = None,
+    allow_early: bool = False
+) -> Dict[str, Any]:
+    """
+    Authoritatively and idempotently marks an activity completed for the authenticated user.
+    Preserves strict per-user isolation: cannot complete another user's task.
+    Recalculates adherence score based on total eligible scheduled practices.
+    Prevents premature completion if the scheduled time window has not arrived yet.
+    """
+    target_date = date_str or datetime.now().strftime("%Y-%m-%d")
+    today_str = datetime.now().strftime("%Y-%m-%d")
+    now = time.time()
+    conn = get_db_connection()
+    c = conn.cursor()
+
+    # Reject future dates unless allow_early
+    if target_date > today_str and not allow_early:
+        conn.close()
+        return {
+            "success": False,
+            "error": f"Cannot complete activity scheduled for future date {target_date}.",
+            "is_premature": True
+        }
+
+    # Locate activity record (exact id, id suffix, or exact name first to prevent substring false-positives)
+    target_clean = re.sub(r'^prac_', '', activity_id_or_name)
+    c.execute(
+        """
+        SELECT * FROM activity_lifecycle 
+        WHERE user_id = ? AND schedule_date = ? 
+          AND (id = ? OR id LIKE '%' || ? OR id LIKE '%' || ? OR lower(practice_name) = lower(?))
+        LIMIT 1
+        """,
+        (user_id, target_date, activity_id_or_name, activity_id_or_name, target_clean, activity_id_or_name)
+    )
+    act_row = c.fetchone()
+    if not act_row:
+        c.execute(
+            """
+            SELECT * FROM activity_lifecycle 
+            WHERE user_id = ? AND schedule_date = ? 
+              AND lower(practice_name) LIKE '%' || lower(?) || '%'
+            LIMIT 1
+            """,
+            (user_id, target_date, activity_id_or_name)
+        )
+        act_row = c.fetchone()
+
+    # Check premature completion window for today
+    if target_date == today_str and not allow_early:
+        s_ts = None
+        slot_str = ""
+        p_label = activity_id_or_name
+        is_already_done = False
+
+        if act_row:
+            act_dict = dict(act_row)
+            p_label = act_dict.get("practice_name") or activity_id_or_name
+            slot_str = act_dict.get("time_slot") or ""
+            s_ts = act_dict.get("start_time_ts")
+            is_already_done = act_dict.get("status") in ('completed_by_user', 'auto_completed_evidence', 'completed')
+        else:
+            c.execute('SELECT last_schedule FROM user_state WHERE user_id = ?', (user_id,))
+            s_row = c.fetchone()
+            if s_row and s_row["last_schedule"]:
+                try:
+                    s_json = json.loads(s_row["last_schedule"])
+                    sched = s_json.get("schedule", {}) if isinstance(s_json, dict) else {}
+                    all_p = (sched.get("morning_block") or []) + (sched.get("midday_block") or []) + (sched.get("evening_block") or [])
+                    for p in all_p:
+                        p_name = p.get("name") or p.get("activity") or ""
+                        if p_name.lower() == activity_id_or_name.lower() or activity_id_or_name.lower() in p_name.lower():
+                            p_label = p_name
+                            slot_str = p.get("time_slot") or ""
+                            break
+                except Exception:
+                    pass
+
+        if not is_already_done:
+            if not s_ts and slot_str:
+                match = re.search(r"(\d{1,2}:\d{2})", slot_str)
+                if match:
+                    try:
+                        s_ts = datetime.strptime(f"{target_date} {match.group(1)}:00", "%Y-%m-%d %H:%M:%S").timestamp()
+                    except Exception:
+                        s_ts = None
+
+            if s_ts and (s_ts - now > 900):  # More than 15 minutes before scheduled start time
+                conn.close()
+                return {
+                    "success": False,
+                    "error": f"'{p_label}' is scheduled for {slot_str}. You can mark it completed once its scheduled time window begins.",
+                    "is_premature": True,
+                    "time_slot": slot_str,
+                    "start_time_ts": s_ts
+                }
+
+    practice_name = activity_id_or_name
+    act_id = None
+    if act_row:
+        act_dict = dict(act_row)
+        practice_name = act_dict["practice_name"]
+        act_id = act_dict["id"]
+        # Update lifecycle status
+        c.execute(
+            """
+            UPDATE activity_lifecycle 
+            SET status = 'completed_by_user', completed_at = ?, completion_source = 'manual_dashboard', updated_at = ?
+            WHERE id = ? AND user_id = ?
+            """,
+            (now, now, act_id, user_id)
+        )
+
+    # Record in completions (deduplicated)
+    c.execute(
+        'SELECT id FROM completions WHERE user_id = ? AND practice_name = ? AND completion_date = ?',
+        (user_id, practice_name, target_date)
+    )
+    if not c.fetchone():
+        c.execute(
+            'INSERT INTO completions (user_id, practice_name, completion_date) VALUES (?, ?, ?)',
+            (user_id, practice_name, target_date)
+        )
+
+    # Recalculate adherence
+    c.execute(
+        """
+        SELECT count(*) as total,
+               sum(CASE WHEN status IN ('completed_by_user', 'auto_completed_evidence', 'completed') THEN 1 ELSE 0 END) as completed
+        FROM activity_lifecycle
+        WHERE user_id = ? AND schedule_date = ? AND status != 'cancelled' AND compensation_for_id IS NULL
+        """,
+        (user_id, target_date)
+    )
+    counts = c.fetchone()
+    total_eligible = counts["total"] if counts and counts["total"] is not None else 0
+    completed_count = counts["completed"] if counts and counts["completed"] is not None else 0
+
+    if total_eligible == 0:
+        # Check schedule in user_state
+        c.execute('SELECT last_schedule FROM user_state WHERE user_id = ?', (user_id,))
+        s_row = c.fetchone()
+        if s_row and s_row["last_schedule"]:
+            try:
+                s_json = json.loads(s_row["last_schedule"])
+                sched = s_json.get("schedule", {}) if isinstance(s_json, dict) else {}
+                all_p = (sched.get("morning_block") or []) + (sched.get("midday_block") or []) + (sched.get("evening_block") or [])
+                total_eligible = len(all_p)
+            except Exception:
+                pass
+        c.execute('SELECT count(DISTINCT practice_name) as cnt FROM completions WHERE user_id = ? AND completion_date = ?', (user_id, target_date))
+        c_cnt = c.fetchone()
+        completed_count = c_cnt["cnt"] if c_cnt else 1
+
+    from src.behavior.scoring import ScoringEngine
+    adh_res = ScoringEngine.calculate_adherence_score(completed_count, total_eligible)
+    # Store normalized score (0.0 to 1.0) in user_state
+    normalized_adh = adh_res["score"] / 100.0
+    c.execute('UPDATE user_state SET adherence_score = ? WHERE user_id = ?', (normalized_adh, user_id))
+
     conn.commit()
     conn.close()
 
-def get_today_completions(user_id) -> List[str]:
+    return {
+        "success": True,
+        "user_id": user_id,
+        "practice_name": practice_name,
+        "activity_id": act_id,
+        "status": "completed_by_user",
+        "adherence": adh_res,
+        "completed_count": completed_count,
+        "total_eligible_count": total_eligible,
+        "timestamp": now
+    }
+
+def get_today_completions(user_id: int, date_str: Optional[str] = None) -> List[str]:
     conn = get_db_connection()
     c = conn.cursor()
-    c.execute('SELECT practice_name FROM completions WHERE user_id = ? AND completion_date = CURRENT_DATE', (user_id,))
+    target_date = date_str or datetime.now().strftime("%Y-%m-%d")
+    c.execute('SELECT practice_name FROM completions WHERE user_id = ? AND completion_date = ?', (user_id, target_date))
     rows = c.fetchall()
     conn.close()
     return [row["practice_name"] for row in rows]
+
+def get_daily_completion_counts(user_id: int, days: int = 5) -> List[Dict[str, Any]]:
+    conn = get_db_connection()
+    c = conn.cursor()
+    c.execute(
+        """
+        SELECT completion_date, count(*) as count 
+        FROM completions 
+        WHERE user_id = ? AND completion_date >= date('now', ?)
+        GROUP BY completion_date
+        ORDER BY completion_date ASC
+        """,
+        (user_id, f"-{days} days")
+    )
+    rows = c.fetchall()
+    conn.close()
+    return [{"date": row["completion_date"], "count": row["count"]} for row in rows]
 
 # --- Notification Methods ---
 
