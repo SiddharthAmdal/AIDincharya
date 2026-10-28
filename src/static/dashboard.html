@@ -183,7 +183,7 @@
 </div>
 </nav>
 <!-- Main Content Canvas -->
-<main class="flex-1 ml-0 md:ml-64 p-margin-mobile md:p-margin-desktop max-w-[1600px] w-full mx-auto flex flex-col gap-12">
+<main class="flex-1 ml-0 md:ml-64 p-margin-mobile md:p-margin-desktop pb-32 md:pb-20 max-w-[1600px] w-full mx-auto flex flex-col gap-12 min-h-screen">
 <!-- Header -->
 <header class="flex justify-between items-end">
 <div>
@@ -209,18 +209,18 @@
 <span class="material-symbols-outlined text-primary" data-icon="vital_signs">vital_signs</span>
 </div>
 <div class="flex items-baseline gap-2 relative z-10">
-<span class="font-headline-lg text-headline-lg text-primary">88</span>
+<span id="dashboard-wellness-score" class="font-headline-lg text-headline-lg text-primary">--</span>
 <span class="font-body-sm text-body-sm text-outline">/ 100</span>
 </div>
 </div>
 <div class="relative z-10 mt-4">
 <div class="h-1 w-full bg-surface-container rounded-full overflow-hidden">
-<div class="h-full bg-primary rounded-full w-[88%]"></div>
+<div id="dashboard-wellness-bar" class="h-full bg-primary rounded-full w-[0%] transition-all duration-500"></div>
 </div>
-<p class="font-body-sm text-body-sm text-secondary mt-2 flex items-center gap-1">
-<span class="material-symbols-outlined text-[16px]" data-icon="trending_up">trending_up</span>
-                        +2 from yesterday
-                    </p>
+<p id="dashboard-wellness-note" class="font-body-sm text-body-sm text-secondary mt-2 flex items-center gap-1 line-clamp-1">
+<span class="material-symbols-outlined text-[16px]" data-icon="insights">insights</span>
+Calculating wellness...
+</p>
 </div>
 </article>
 <!-- Sleep Score -->
@@ -228,17 +228,17 @@
 <div class="absolute -right-4 -bottom-4 w-32 h-32 bg-secondary/5 rounded-full blur-2xl"></div>
 <div>
 <div class="flex items-center justify-between mb-2 relative z-10">
-<span class="font-label-md text-label-md text-on-surface-variant uppercase tracking-wider">Sleep Score</span>
+<span class="font-label-md text-label-md text-on-surface-variant uppercase tracking-wider">Sleep Tracking</span>
 <span class="material-symbols-outlined text-secondary" data-icon="bedtime">bedtime</span>
 </div>
 <div class="flex items-baseline gap-2 relative z-10">
-<span class="font-headline-lg text-headline-lg text-primary">92</span>
-<span class="font-body-sm text-body-sm text-outline">/ 100</span>
+<span id="dashboard-sleep-score" class="font-headline-lg text-headline-lg text-primary">--</span>
+<span id="dashboard-sleep-max" class="font-body-sm text-body-sm text-outline hidden">/ 100</span>
 </div>
 </div>
 <div class="relative z-10">
-<p class="font-headline-md text-headline-md text-secondary">7h 45m</p>
-<p class="font-body-sm text-body-sm text-on-surface-variant mt-1">Optimal restorative phase achieved.</p>
+<p id="dashboard-sleep-duration" class="font-headline-md text-headline-md text-secondary">Awaiting night cycle</p>
+<p id="dashboard-sleep-note" class="font-body-sm text-body-sm text-on-surface-variant mt-1">Wear watch overnight to record sleep.</p>
 </div>
 </article>
 <!-- Adherence Score -->
@@ -250,16 +250,11 @@
 <span class="material-symbols-outlined text-tertiary-container" data-icon="task_alt">task_alt</span>
 </div>
 <div class="flex items-baseline gap-2 relative z-10">
-<span id="dashboard-adherence-value" class="font-headline-lg text-headline-lg text-primary">95%</span>
+<span id="dashboard-adherence-value" class="font-headline-lg text-headline-lg text-primary">--%</span>
 </div>
 </div>
-<div class="flex gap-1 relative z-10 mt-auto">
-<!-- Mini chart representation -->
-<div class="h-8 w-1/5 bg-primary/20 rounded-t-sm mt-auto"></div>
-<div class="h-12 w-1/5 bg-primary/40 rounded-t-sm mt-auto"></div>
-<div class="h-10 w-1/5 bg-primary/60 rounded-t-sm mt-auto"></div>
-<div class="h-16 w-1/5 bg-primary/80 rounded-t-sm mt-auto"></div>
-<div class="h-20 w-1/5 bg-primary rounded-t-sm mt-auto"></div>
+<div id="dashboard-adherence-chart" class="flex gap-1.5 items-end relative z-10 mt-auto h-16 w-full">
+<!-- Dynamic 5-day mini chart bars rendered by app.js -->
 </div>
 </article>
 <!-- Dosha Balance -->
@@ -278,6 +273,91 @@
 <span class="px-3 py-1 rounded-full bg-surface-container text-on-surface-variant font-label-sm text-label-sm">Warmth</span>
 </div>
 </article>
+</section>
+
+<!-- Live Smartwatch Biometrics Section -->
+<section class="glass-card rounded-3xl p-6 md:p-8 border border-outline-variant/20 shadow-sm relative">
+    <div class="flex flex-col md:flex-row justify-between items-start md:items-center gap-4 mb-6">
+        <div class="flex items-center gap-3">
+            <div class="w-12 h-12 rounded-2xl bg-primary/10 flex items-center justify-center text-primary shrink-0">
+                <span class="material-symbols-outlined text-2xl" data-icon="watch">watch</span>
+            </div>
+            <div>
+                <div class="flex items-center gap-2 flex-wrap">
+                    <h3 class="font-headline-sm text-headline-sm text-primary font-bold">Fastrack Smartwatch Telemetry</h3>
+                    <span id="telemetry-connection-badge" class="px-2.5 py-0.5 rounded-full text-[11px] font-bold bg-emerald-100 text-emerald-800 flex items-center gap-1">
+                        <span class="w-2 h-2 rounded-full bg-emerald-500 animate-pulse"></span>
+                        Health Connect Active
+                    </span>
+                </div>
+                <p id="telemetry-device-info" class="font-body-sm text-xs text-on-surface-variant mt-0.5">Device: Fastrack Noir Charm · Source: com.google.android.apps.healthdata</p>
+            </div>
+        </div>
+        <div class="flex items-center gap-3 flex-wrap">
+            <div class="text-right">
+                <p id="telemetry-last-sync-text" class="text-xs text-gray-500 font-medium">Checking sync status...</p>
+                <p id="telemetry-stale-warning" class="text-[11px] text-amber-600 font-medium hidden">Notice: Awaiting fresh companion sync</p>
+            </div>
+            <button id="telemetry-manual-refresh-btn" class="px-4 py-2 rounded-xl bg-surface-container hover:bg-surface-container-high transition-colors text-primary font-bold text-xs flex items-center gap-1.5 cursor-pointer shadow-sm active:scale-95">
+                <span class="material-symbols-outlined text-[16px]" data-icon="sync">sync</span>
+                Refresh Biometrics
+            </button>
+        </div>
+    </div>
+
+    <!-- 4 Biometric Cards (No Clipping, Clear Labels, Full Visibility) -->
+    <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+        <!-- Heart Rate -->
+        <div class="bg-surface-container-lowest p-5 rounded-2xl border border-outline-variant/15 flex flex-col justify-between min-h-[145px] hover:border-primary/20 transition-all">
+            <div class="flex items-center justify-between mb-2">
+                <span class="text-xs font-bold uppercase tracking-wider text-gray-500">Heart Rate</span>
+                <span class="material-symbols-outlined text-rose-500 text-xl" data-icon="favorite">favorite</span>
+            </div>
+            <div class="flex items-baseline gap-1.5 my-1">
+                <span id="biometric-hr-val" class="font-headline-lg text-3xl font-bold text-primary">--</span>
+                <span class="text-xs text-gray-400 font-medium">BPM</span>
+            </div>
+            <div id="biometric-hr-time" class="text-[11px] text-gray-500 mt-2 break-words leading-tight">No recent reading</div>
+        </div>
+
+        <!-- Daily Steps -->
+        <div class="bg-surface-container-lowest p-5 rounded-2xl border border-outline-variant/15 flex flex-col justify-between min-h-[145px] hover:border-primary/20 transition-all">
+            <div class="flex items-center justify-between mb-2">
+                <span class="text-xs font-bold uppercase tracking-wider text-gray-500">Daily Steps</span>
+                <span class="material-symbols-outlined text-amber-500 text-xl" data-icon="directions_walk">directions_walk</span>
+            </div>
+            <div class="flex items-baseline gap-1.5 my-1">
+                <span id="biometric-steps-val" class="font-headline-lg text-3xl font-bold text-primary">--</span>
+                <span class="text-xs text-gray-400 font-medium">steps</span>
+            </div>
+            <div id="biometric-steps-time" class="text-[11px] text-gray-500 mt-2 break-words leading-tight">Today's cumulative total</div>
+        </div>
+
+        <!-- Blood Oxygen SpO2 -->
+        <div class="bg-surface-container-lowest p-5 rounded-2xl border border-outline-variant/15 flex flex-col justify-between min-h-[145px] hover:border-primary/20 transition-all">
+            <div class="flex items-center justify-between mb-2">
+                <span class="text-xs font-bold uppercase tracking-wider text-gray-500">Blood Oxygen (SpO₂)</span>
+                <span class="material-symbols-outlined text-teal-600 text-xl" data-icon="air">air</span>
+            </div>
+            <div class="flex items-baseline gap-1.5 my-1">
+                <span id="biometric-spo2-val" class="font-headline-lg text-3xl font-bold text-primary">--</span>
+                <span class="text-xs text-gray-400 font-medium">%</span>
+            </div>
+            <div id="biometric-spo2-time" class="text-[11px] text-gray-500 mt-2 break-words leading-tight">No recent reading</div>
+        </div>
+
+        <!-- Stress Telemetry -->
+        <div class="bg-surface-container-lowest p-5 rounded-2xl border border-outline-variant/15 flex flex-col justify-between min-h-[145px] hover:border-primary/20 transition-all bg-gray-50/50">
+            <div class="flex items-center justify-between mb-2">
+                <span class="text-xs font-bold uppercase tracking-wider text-gray-500">Stress Telemetry</span>
+                <span class="material-symbols-outlined text-gray-400 text-xl" data-icon="info">info</span>
+            </div>
+            <div class="flex items-baseline gap-1.5 my-1">
+                <span id="biometric-stress-val" class="text-sm font-semibold text-gray-500">Unsupported</span>
+            </div>
+            <div id="biometric-stress-time" class="text-[11px] text-gray-400 mt-2 break-words leading-tight">Hardware sensor unsupported on Fastrack Noir Charm</div>
+        </div>
+    </div>
 </section>
 <!-- Lower Section Layout -->
 <section class="grid grid-cols-1 lg:grid-cols-3 gap-8 h-full">

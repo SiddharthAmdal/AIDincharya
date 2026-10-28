@@ -2,6 +2,19 @@
 
 const API_BASE = '/api';
 
+// --- HTML Escaping Helper ---
+function escapeHtml(str) {
+    if (str === null || str === undefined) return '';
+    return String(str)
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;')
+        .replace(/'/g, '&#39;');
+}
+window.escapeHtml = escapeHtml;
+
+
 // --- Global Styles ---
 const style = document.createElement('style');
 style.innerHTML = `
@@ -476,24 +489,28 @@ async function getSchedule(forceRefresh = false) {
     const cachedString = sessionStorage.getItem('schedule_cache');
     let cache = null;
     try { if(cachedString) cache = JSON.parse(cachedString); } catch(e) {}
-    if (!forceRefresh && cache && cache.data && (now - cache.timestamp < CACHE_DURATION)) return cache.data;
+    if (!forceRefresh && cache && cache.data && (now - cache.timestamp < CACHE_DURATION)) {
+        const s = cache.data.schedule || cache.data;
+        if (s && (s.morning_block || s.midday_block || s.evening_block || (s.schedule && s.schedule.morning_block))) {
+            return cache.data;
+        }
+    }
 
     // Fast-path: Check if there is already a valid persisted schedule in the vault
-    if (!forceRefresh) {
-        try {
-            const currentRes = await authenticatedFetch(`${API_BASE}/schedule/current`);
-            if (currentRes && currentRes.ok) {
-                const currentData = await currentRes.json();
-                if (currentData && currentData.schedule) {
-                    if (currentVersion === latestScheduleVersion) {
-                        sessionStorage.setItem('schedule_cache', JSON.stringify({ data: currentData, timestamp: now }));
-                    }
-                    return currentData;
+    try {
+        const currentRes = await authenticatedFetch(`${API_BASE}/schedule/current`);
+        if (currentRes && currentRes.ok) {
+            const currentData = await currentRes.json();
+            const s = currentData ? (currentData.schedule || currentData) : null;
+            if (s && (s.morning_block || s.midday_block || s.evening_block || (s.schedule && s.schedule.morning_block))) {
+                if (currentVersion === latestScheduleVersion) {
+                    sessionStorage.setItem('schedule_cache', JSON.stringify({ data: currentData, timestamp: now }));
                 }
+                return currentData;
             }
-        } catch (err) {
-            console.warn("Fast-path schedule fetch failed, falling back to generate:", err);
         }
+    } catch (err) {
+        console.warn("Fast-path schedule fetch failed, falling back to generate:", err);
     }
 
     const simulateFever = sessionStorage.getItem('simulate_fever') === 'true';
@@ -763,16 +780,89 @@ async function renderChatMessage(container, role, text) {
 function createTypingIndicator() {
     const div = document.createElement('div');
     div.id = 'typing-indicator';
-    div.className = 'flex gap-4 max-w-3xl message-entrance mb-8';
+    div.className = 'flex gap-4 max-w-3xl message-entrance mb-8 w-full';
     div.innerHTML = `
         <div class="w-10 h-10 rounded-xl bg-primary flex items-center justify-center flex-shrink-0 shadow-md">
-            <span class="material-symbols-outlined text-on-primary text-[22px]">psychology_alt</span>
+            <span class="material-symbols-outlined text-on-primary text-[22px] ai-pulse">psychology_alt</span>
         </div>
-        <div class="bg-white p-5 rounded-[1.5rem] rounded-tl-none shadow-sm border border-outline-variant/10 flex items-center gap-1">
-            <div class="typing-dot"></div><div class="typing-dot"></div><div class="typing-dot"></div>
+        <div class="bg-white p-5 rounded-[1.5rem] rounded-tl-none shadow-md border border-outline-variant/20 flex-1 min-w-0">
+            <div class="flex items-center justify-between mb-2 pb-2 border-b border-outline-variant/10">
+                <div class="flex items-center gap-2">
+                    <span class="w-2.5 h-2.5 rounded-full bg-secondary ai-pulse"></span>
+                    <span class="text-xs font-bold uppercase tracking-wider text-primary">Vaidya Reasoning Engine Active</span>
+                </div>
+                <div class="flex items-center gap-1">
+                    <div class="typing-dot"></div><div class="typing-dot"></div><div class="typing-dot"></div>
+                </div>
+            </div>
+            <div id="live-trace-steps" class="space-y-1.5 text-xs font-mono text-on-surface-variant">
+                <div class="flex items-center gap-2 text-primary font-medium">
+                    <span class="material-symbols-outlined text-[15px] text-secondary">explore</span>
+                    <span>Analyzing clinical query, constitutional baseline & biometrics...</span>
+                </div>
+            </div>
         </div>
     `;
     return div;
+}
+
+function renderAgentTraceBlock(container, traceEvents) {
+    if (!container || !traceEvents || traceEvents.length === 0) return;
+    const traceDiv = document.createElement('div');
+    traceDiv.className = 'w-full max-w-3xl mb-4 p-4 bg-surface-container-low border border-primary/20 rounded-2xl text-xs font-mono shadow-sm';
+
+    let stepsHtml = '';
+    traceEvents.forEach(evt => {
+        if (evt.stage === 'understanding_question') {
+            stepsHtml += `
+                <div class="flex items-center gap-2 text-primary font-semibold">
+                    <span class="text-secondary text-sm">✦</span>
+                    <span>${escapeHtml(evt.message || 'Understanding context')}</span>
+                </div>`;
+        } else if (evt.stage === 'tool_call_start') {
+            const toolTitle = evt.friendly_name || evt.tool;
+            stepsHtml += `
+                <div class="flex items-center gap-2 text-on-surface-variant pl-3">
+                    <span class="text-secondary font-bold">▸</span>
+                    <span class="font-bold text-primary">${escapeHtml(toolTitle)}</span>
+                </div>`;
+        } else if (evt.stage === 'tool_call_complete') {
+            const isErr = evt.status === 'error';
+            const icon = isErr ? '✗' : '✓';
+            const color = isErr ? 'text-error' : 'text-secondary';
+            const dur = evt.duration_ms ? `${evt.duration_ms}ms` : '';
+            stepsHtml += `
+                <div class="flex items-center justify-between pl-6 py-0.5 ${color}">
+                    <span>${icon} ${escapeHtml(evt.summary || 'Completed')}</span>
+                    <span class="opacity-60 text-[10px] font-mono">${dur}</span>
+                </div>`;
+        } else if (evt.stage === 'preparing_response') {
+            stepsHtml += `
+                <div class="flex items-center gap-2 text-primary font-semibold pt-1">
+                    <span class="text-secondary text-sm">✦</span>
+                    <span>${escapeHtml(evt.message || 'Synthesizing response')}</span>
+                </div>`;
+        }
+    });
+
+    const toolCallsCount = traceEvents.filter(e => e.stage === 'tool_call_start').length;
+
+    traceDiv.innerHTML = `
+        <details class="group cursor-pointer" open>
+            <summary class="flex items-center justify-between font-bold text-primary text-xs uppercase tracking-wider select-none list-none">
+                <span class="flex items-center gap-2">
+                    <span class="material-symbols-outlined text-sm text-secondary">insights</span>
+                    Agent Activity Trace (${toolCallsCount} dynamic tool operations)
+                </span>
+                <span class="material-symbols-outlined text-sm group-open:rotate-180 transition-transform">expand_more</span>
+            </summary>
+            <div class="mt-3 pt-3 border-t border-outline-variant/20 space-y-1.5">
+                ${stepsHtml}
+            </div>
+        </details>
+    `;
+    container.appendChild(traceDiv);
+    container.scrollTop = container.scrollHeight;
 }
 
 // --- Recalibration Flowchart ---
@@ -1006,37 +1096,112 @@ async function loadDashboardData() {
             container.innerHTML = `<div class="p-8 text-center animate-pulse italic opacity-60">Syncing Wellness Vault...</div>`;
         }
 
-        // Parallel fetch for schedule, user state, and insights
-        const [data, stateRes, insightsRes] = await Promise.all([
+        // Parallel fetch for schedule, dashboard summary, and insights
+        const [data, summaryRes, insightsRes] = await Promise.all([
             getSchedule(),
-            authenticatedFetch(`${API_BASE}/user/state`),
+            authenticatedFetch(`${API_BASE}/dashboard/summary`),
             authenticatedFetch(`${API_BASE}/insights`).catch(() => null)
         ]);
 
-        const state = (stateRes && stateRes.ok) ? await stateRes.json() : {};
+        const summary = (summaryRes && summaryRes.ok) ? await summaryRes.json() : {};
+
+        // Onboarding Guard: Redirect new users who haven't completed assessment
+        if (summary && summary.has_completed_onboarding === false) {
+            window.location.href = '/onboarding';
+            return;
+        }
+
+        // Helper for formatting time strings cleanly
+        const formatTimeStr = (isoString) => {
+            if (!isoString) return '';
+            try {
+                const d = new Date(isoString);
+                if (isNaN(d.getTime())) return isoString;
+                return d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', hour12: true });
+            } catch(e) {
+                return isoString;
+            }
+        };
 
         // 1. Update User Greeting dynamically
         const greetingEl = document.getElementById('dashboard-user-greeting');
         if (greetingEl) {
-            const rawName = state.username || localStorage.getItem('dinacharya_username') || 'Friend';
+            const rawName = summary.username || localStorage.getItem('dinacharya_username') || 'Friend';
             const displayName = rawName.charAt(0).toUpperCase() + rawName.slice(1);
             greetingEl.innerText = `Welcome back, ${displayName}`;
         }
 
-        // 2. Update Adherence Score dynamically
-        const adherenceEl = document.getElementById('dashboard-adherence-value');
-        if (adherenceEl && state.adherence_score !== undefined) {
-            const pct = Math.round(state.adherence_score * 100);
-            adherenceEl.innerText = `${pct}%`;
+        // 2. Update Wellness Score dynamically
+        const wellnessScoreEl = document.getElementById('dashboard-wellness-score');
+        const wellnessBarEl = document.getElementById('dashboard-wellness-bar');
+        const wellnessNoteEl = document.getElementById('dashboard-wellness-note');
+        if (wellnessScoreEl && summary.wellness_score !== undefined) {
+            wellnessScoreEl.innerText = summary.wellness_score;
+            if (wellnessBarEl) wellnessBarEl.style.width = `${Math.min(100, Math.max(0, summary.wellness_score))}%`;
+            if (wellnessNoteEl && summary.wellness_formula) {
+                wellnessNoteEl.innerHTML = `
+                    <span class="material-symbols-outlined text-[16px]" data-icon="insights">insights</span>
+                    ${summary.wellness_formula}
+                `;
+            }
         }
 
-        // 3. Update Current Dosha & Tags dynamically
+        // 3. Update Sleep Tracking dynamically
+        const sleepScoreEl = document.getElementById('dashboard-sleep-score');
+        const sleepMaxEl = document.getElementById('dashboard-sleep-max');
+        const sleepDurationEl = document.getElementById('dashboard-sleep-duration');
+        const sleepNoteEl = document.getElementById('dashboard-sleep-note');
+        if (sleepScoreEl) {
+            if (summary.sleep_score !== null && summary.sleep_score !== undefined) {
+                sleepScoreEl.innerText = summary.sleep_score;
+                if (sleepMaxEl) sleepMaxEl.classList.remove('hidden');
+                if (sleepDurationEl) sleepDurationEl.innerText = summary.sleep_duration || 'Rest recorded';
+                if (sleepNoteEl) sleepNoteEl.innerText = summary.sleep_note || 'Restorative sleep cycle recorded.';
+            } else {
+                sleepScoreEl.innerText = 'Awaiting';
+                if (sleepMaxEl) sleepMaxEl.classList.add('hidden');
+                if (sleepDurationEl) sleepDurationEl.innerText = summary.sleep_duration || 'Awaiting night cycle';
+                if (sleepNoteEl) sleepNoteEl.innerText = summary.sleep_note || 'Wear watch overnight to record sleep.';
+            }
+        }
+
+        // 4. Update Adherence Score and 5-Day Trend Chart
+        const adherenceEl = document.getElementById('dashboard-adherence-value');
+        if (adherenceEl && summary.adherence_pct !== undefined) {
+            adherenceEl.innerText = `${summary.adherence_pct}%`;
+        }
+        const adherenceChart = document.getElementById('dashboard-adherence-chart');
+        if (adherenceChart) {
+            const trend = summary.adherence_trend || [];
+            if (trend.length > 0) {
+                const maxCount = Math.max(1, ...trend.map(t => t.count || 0));
+                adherenceChart.innerHTML = trend.map(t => {
+                    const heightPct = Math.max(20, Math.round((t.count / maxCount) * 100));
+                    const dayLabel = t.date ? t.date.slice(5) : '';
+                    return `
+                        <div class="flex-1 flex flex-col items-center gap-1 h-full justify-end group relative cursor-pointer" title="${t.date}: ${t.count} practices completed">
+                            <div class="w-full bg-primary/20 group-hover:bg-primary/50 rounded-t-sm transition-all" style="height: ${heightPct}%;"></div>
+                            <span class="text-[9px] text-gray-400 group-hover:text-primary font-mono">${dayLabel}</span>
+                        </div>
+                    `;
+                }).join('');
+            } else {
+                adherenceChart.innerHTML = `
+                    <div class="w-full text-center text-[10px] text-gray-400 py-2">
+                        Tracking daily habit completions
+                    </div>
+                `;
+            }
+        }
+
+        // 5. Update Current Dosha & Tags dynamically
         const doshaTitleEl = document.getElementById('dashboard-dosha-title');
         const doshaTagsEl = document.getElementById('dashboard-dosha-tags');
-        if (data && data.dosha_profile) {
-            const profile = data.dosha_profile;
-            const flags = profile.vikriti_flags || {};
-            const p = profile.prakriti || {};
+        const dProfile = summary.dosha_profile || (data && data.dosha_profile) || {};
+        const pProfile = summary.prakriti_profile || {};
+        if (dProfile || pProfile) {
+            const flags = dProfile.vikriti_flags || {};
+            const p = dProfile.prakriti || {};
 
             let doshaTitle = "Vata-Pitta Balance";
             let tags = ["Grounding", "Equilibrium"];
@@ -1056,6 +1221,10 @@ async function loadDashboardData() {
             } else if (flags.kapha_aggravated) {
                 doshaTitle = "Kapha Aggravated";
                 tags = ["Stimulating", "Light", "Movement"];
+            } else if (pProfile.constitution_type) {
+                doshaTitle = pProfile.constitution_type;
+                const pDosha = pProfile.primary_dosha || "Vata";
+                tags = [pDosha === "Vata" ? "Warmth" : pDosha === "Pitta" ? "Cooling" : "Lightness", "Circadian Sync"];
             } else if (p.vata || p.pitta || p.kapha) {
                 const maxD = Object.entries({ Vata: p.vata || 0, Pitta: p.pitta || 0, Kapha: p.kapha || 0 }).sort((a,b) => b[1] - a[1])[0][0];
                 doshaTitle = `${maxD} Dominant`;
@@ -1068,6 +1237,96 @@ async function loadDashboardData() {
                     <span class="px-3 py-1 rounded-full ${idx === 0 ? 'bg-secondary-container text-on-secondary-container' : 'bg-surface-container text-on-surface-variant'} font-label-sm text-label-sm">${t}</span>
                 `).join('');
             }
+        }
+
+        // 6. Update Live Smartwatch Biometrics Panel
+        const telem = summary.telemetry || {};
+
+        // Heart Rate
+        const hrEl = document.getElementById('biometric-hr-val');
+        const hrTimeEl = document.getElementById('biometric-hr-time');
+        if (hrEl) {
+            if (telem.heart_rate && telem.heart_rate.is_available) {
+                hrEl.innerText = telem.heart_rate.value;
+                const timeStr = telem.heart_rate.measured_at ? formatTimeStr(telem.heart_rate.measured_at) : '';
+                if (hrTimeEl) hrTimeEl.innerText = `Measured: ${timeStr} · Fastrack Watch`;
+            } else {
+                hrEl.innerText = '--';
+                if (hrTimeEl) hrTimeEl.innerText = 'No heart rate records yet';
+            }
+        }
+
+        // Daily Steps
+        const stepsEl = document.getElementById('biometric-steps-val');
+        const stepsTimeEl = document.getElementById('biometric-steps-time');
+        if (stepsEl) {
+            if (telem.steps && telem.steps.is_available) {
+                stepsEl.innerText = Number(telem.steps.value).toLocaleString();
+                const dateStr = telem.steps.measured_at ? telem.steps.measured_at.split('T')[0] : 'Today';
+                if (stepsTimeEl) stepsTimeEl.innerText = `Cumulative total for ${dateStr}`;
+            } else {
+                stepsEl.innerText = '--';
+                if (stepsTimeEl) stepsTimeEl.innerText = 'No step records yet';
+            }
+        }
+
+        // Blood Oxygen SpO2
+        const spo2El = document.getElementById('biometric-spo2-val');
+        const spo2TimeEl = document.getElementById('biometric-spo2-time');
+        if (spo2El) {
+            if (telem.spo2 && telem.spo2.is_available) {
+                spo2El.innerText = telem.spo2.value;
+                const timeStr = telem.spo2.measured_at ? formatTimeStr(telem.spo2.measured_at) : '';
+                if (spo2TimeEl) spo2TimeEl.innerText = `Measured: ${timeStr} · Fastrack Watch`;
+            } else {
+                spo2El.innerText = '--';
+                if (spo2TimeEl) spo2TimeEl.innerText = 'No SpO₂ records yet';
+            }
+        }
+
+        // Stress
+        const stressEl = document.getElementById('biometric-stress-val');
+        const stressTimeEl = document.getElementById('biometric-stress-time');
+        if (stressEl) {
+            if (telem.stress && telem.stress.is_available) {
+                stressEl.innerText = `${telem.stress.value} / 100`;
+                if (stressTimeEl) stressTimeEl.innerText = `Measured: ${telem.stress.measured_at}`;
+            } else {
+                stressEl.innerText = 'Unsupported';
+                if (stressTimeEl) stressTimeEl.innerText = 'Fastrack Noir Charm lacks stress sensor';
+            }
+        }
+
+        // Device Info & Sync
+        const devInfoEl = document.getElementById('telemetry-device-info');
+        if (devInfoEl) {
+            devInfoEl.innerText = `Device: ${telem.device_model || 'Fastrack Noir Charm'} · Package: ${telem.source_package || 'com.titan.fastrack.reflex'}`;
+        }
+        const syncTextEl = document.getElementById('telemetry-last-sync-text');
+        if (syncTextEl) {
+            if (summary.is_upstream_stale || telem.is_upstream_stale) {
+                syncTextEl.innerHTML = `
+                    <span class="inline-flex items-center gap-1 text-amber-800 bg-amber-100/90 border border-amber-300 px-2.5 py-0.5 rounded-full font-bold text-[11px]">
+                        <span class="material-symbols-outlined text-[13px]">warning</span>
+                        Upstream Data Stale (&gt;30m) · Open Fastrack Smart World App
+                    </span>`;
+            } else {
+                syncTextEl.innerText = telem.last_sync ? `Last synced ${formatTimeStr(telem.last_sync)}` : 'Synced via Health Connect';
+            }
+        }
+
+        // Manual Refresh button wiring
+        const refreshBtn = document.getElementById('telemetry-manual-refresh-btn');
+        if (refreshBtn && !refreshBtn.dataset.wired) {
+            refreshBtn.dataset.wired = 'true';
+            refreshBtn.onclick = async () => {
+                refreshBtn.classList.add('animate-pulse');
+                refreshBtn.disabled = true;
+                await loadDashboardData();
+                refreshBtn.classList.remove('animate-pulse');
+                refreshBtn.disabled = false;
+                showToast('✓ Fastrack biometrics refreshed');
+            };
         }
 
         // 4. Update Dynamic Insight Highlight from /api/insights
@@ -1104,29 +1363,56 @@ async function loadDashboardData() {
             return;
         }
 
+        // Build authoritative set of today's completed practice names
+        const completedNames = new Set((summary.completions_today || []).map(p => p.toLowerCase()));
+        if (summary.activities && Array.isArray(summary.activities)) {
+            summary.activities.forEach(a => {
+                if (['completed_by_user', 'auto_completed_evidence', 'completed'].includes(a.status)) {
+                    if (a.practice_name) completedNames.add(a.practice_name.toLowerCase());
+                }
+            });
+        }
+
+function isSlotUpcoming(slotStr, bufferMinutes = 15) {
+    if (!slotStr || typeof slotStr !== 'string') return false;
+    const match = slotStr.match(/(\d{1,2}):(\d{2})/);
+    if (!match) return false;
+    const startHour = parseInt(match[1], 10);
+    const startMin = parseInt(match[2], 10);
+    const startTotalMin = startHour * 60 + startMin;
+
+    const now = new Date();
+    const currentTotalMin = now.getHours() * 60 + now.getMinutes();
+
+    return (startTotalMin - currentTotalMin) > bufferMinutes;
+}
+
         // Display up to 4 upcoming tasks
         const displayTasks = allTasks.slice(0, 4);
         displayTasks.forEach(task => {
             const taskName = task.name || task.activity || 'Practice';
             const taskSlot = task.time_slot || 'Flexible';
             const taskDesc = task.description || task.rationale || 'Ayurvedic daily habit';
+            const isCompleted = completedNames.has(taskName.toLowerCase());
+            const isUpcoming = !isCompleted && isSlotUpcoming(taskSlot, 15);
 
             const div = document.createElement('div');
-            div.className = 'flex items-center gap-4 p-4 rounded-2xl border border-outline-variant/20 bg-surface-container-lowest/50 hover:bg-surface-container-lowest transition-all cursor-pointer group';
+            div.className = `flex items-center gap-4 p-4 rounded-2xl border border-outline-variant/20 transition-all cursor-pointer group ${isCompleted ? 'bg-surface-container-low/40 opacity-70' : isUpcoming ? 'bg-surface-container-lowest/30 opacity-80' : 'bg-surface-container-lowest/50 hover:bg-surface-container-lowest'}`;
 
             div.innerHTML = `
-                <div class="w-12 h-12 rounded-full bg-secondary-container flex items-center justify-center text-on-secondary-container shrink-0 group-hover:scale-105 transition-transform">
-                    <span class="material-symbols-outlined" data-icon="spa">spa</span>
+                <div class="w-12 h-12 rounded-full ${isCompleted ? 'bg-primary text-on-primary' : isUpcoming ? 'bg-surface-container-high text-outline' : 'bg-secondary-container text-on-secondary-container'} flex items-center justify-center shrink-0 group-hover:scale-105 transition-transform shadow-sm">
+                    <span class="material-symbols-outlined" data-icon="${isCompleted ? 'check_circle' : isUpcoming ? 'schedule' : 'spa'}">${isCompleted ? 'check_circle' : isUpcoming ? 'schedule' : 'spa'}</span>
                 </div>
                 <div class="flex-grow">
-                    <div class="flex items-center gap-2 mb-1">
-                        <h4 class="font-label-md text-label-md text-on-surface group-hover:text-primary transition-colors">${taskName}</h4>
-                        <span class="text-[10px] uppercase font-bold text-primary/70 bg-primary/5 px-2 py-0.5 rounded">${taskSlot}</span>
+                    <div class="flex items-center gap-2 mb-1 flex-wrap">
+                        <h4 class="font-label-md text-label-md text-on-surface group-hover:text-primary transition-colors ${isCompleted ? 'line-through text-outline' : ''}">${escapeHtml(taskName)}</h4>
+                        <span class="text-[10px] uppercase font-bold text-primary/70 bg-primary/5 px-2 py-0.5 rounded">${escapeHtml(taskSlot)}</span>
+                        ${isCompleted ? '<span class="text-[10px] uppercase font-bold text-emerald-800 bg-emerald-100 px-2 py-0.5 rounded flex items-center gap-0.5"><span class="material-symbols-outlined text-[12px]">done</span>Completed</span>' : isUpcoming ? '<span class="text-[10px] uppercase font-bold text-outline bg-surface-variant/50 px-2 py-0.5 rounded flex items-center gap-0.5"><span class="material-symbols-outlined text-[12px]">schedule</span>Upcoming</span>' : ''}
                     </div>
-                    <p class="font-body-sm text-body-sm text-on-surface-variant line-clamp-1">${taskDesc}</p>
+                    <p class="font-body-sm text-body-sm text-on-surface-variant line-clamp-1">${escapeHtml(taskDesc)}</p>
                 </div>
-                <button class="task-check-btn w-8 h-8 rounded-full border-2 border-outline-variant flex items-center justify-center hover:border-primary hover:bg-primary/5 transition-all shrink-0" title="Mark as Completed">
-                    <span class="material-symbols-outlined text-[16px] text-primary opacity-0 group-hover:opacity-60 transition-opacity">check</span>
+                <button class="task-check-btn w-8 h-8 rounded-full border-2 ${isCompleted ? 'bg-primary border-primary text-white shadow-sm cursor-default' : isUpcoming ? 'border-outline-variant/40 bg-surface-container-low text-outline/50 cursor-not-allowed' : 'border-outline-variant hover:border-primary hover:bg-primary/5 text-primary'} flex items-center justify-center transition-all shrink-0" title="${isCompleted ? 'Completed' : isUpcoming ? `Scheduled for ${escapeHtml(taskSlot)}. Available once window begins.` : 'Mark as Completed'}">
+                    <span class="material-symbols-outlined text-[16px] ${isCompleted ? 'opacity-100 text-white' : isUpcoming ? 'opacity-70 text-outline' : 'opacity-0 group-hover:opacity-60'}">${isUpcoming ? 'lock_clock' : 'check'}</span>
                 </button>
             `;
 
@@ -1135,25 +1421,47 @@ async function loadDashboardData() {
 
             const handleComplete = async (e) => {
                 e.stopPropagation();
-                // Visual feedback immediately
-                checkBtn.classList.add('bg-primary', 'border-primary', 'text-on-primary');
+                if (isCompleted) {
+                    showToast(`✓ ${taskName} is already recorded as complete today.`);
+                    return;
+                }
+                if (isUpcoming) {
+                    showToast(`⏳ ${taskName} is scheduled for ${taskSlot}. Available once its window arrives.`);
+                    return;
+                }
+
+                // Immediate optimistic visual feedback
+                checkBtn.classList.add('bg-primary', 'border-primary', 'text-white');
                 checkIcon.classList.remove('opacity-0', 'text-primary');
                 checkIcon.classList.add('opacity-100', 'text-white');
-                div.style.opacity = '0.5';
-                div.style.textDecoration = 'line-through';
+                div.classList.add('opacity-70');
+                const titleHeading = div.querySelector('h4');
+                if (titleHeading) titleHeading.classList.add('line-through', 'text-outline');
                 showToast(`✓ Completed ${taskName}`);
 
                 try {
-                    const res = await authenticatedFetch(`${API_BASE}/adherence/log`, {
+                    const res = await authenticatedFetch(`${API_BASE}/activities/complete`, {
                         method: 'POST',
-                        body: JSON.stringify({ user_id: "current", completed_practices: [taskName], recommended_practices: [] })
+                        body: JSON.stringify({ practice_name: taskName })
                     });
                     if (res && res.ok) {
+                        const resData = await res.json();
+                        if (resData.adherence && resData.adherence.display_text) {
+                            const adhBadge = document.getElementById('dashboard-adherence-value');
+                            if (adhBadge) adhBadge.innerText = resData.adherence.display_text;
+                        }
                         sessionStorage.removeItem('schedule_cache');
-                        setTimeout(() => loadDashboardData(), 600);
+                        setTimeout(() => loadDashboardData(true), 500);
+                    } else {
+                        const errJson = await res.json().catch(() => null);
+                        const errMsg = errJson && errJson.detail ? errJson.detail : "Could not complete activity.";
+                        showToast(`⏳ ${errMsg}`);
+                        setTimeout(() => loadDashboardData(true), 800);
                     }
                 } catch(err) {
-                    console.error("Adherence log error:", err);
+                    console.error("Task completion error:", err);
+                    showToast("Network error recording completion.");
+                    setTimeout(() => loadDashboardData(true), 800);
                 }
             };
 
@@ -1166,13 +1474,65 @@ async function loadDashboardData() {
     } catch(e) { console.error("loadDashboardData error:", e); }
 }
 
+window.completeRoutineTask = async function(taskName) {
+    showToast(`✓ Recording ${taskName}...`);
+    try {
+        const res = await authenticatedFetch(`${API_BASE}/activities/complete`, {
+            method: 'POST',
+            body: JSON.stringify({ practice_name: taskName })
+        });
+        if (res && res.ok) {
+            sessionStorage.removeItem('schedule_cache');
+            showToast(`✓ Saved: ${taskName} completed!`);
+            loadRoutineData(false);
+        } else {
+            const errJson = await res.json().catch(() => null);
+            const errMsg = errJson && errJson.detail ? errJson.detail : "Failed to record task completion.";
+            showToast(`⏳ ${errMsg}`);
+        }
+    } catch(err) {
+        console.error("completeRoutineTask error:", err);
+        showToast("Network error recording completion.");
+    }
+};
+
 async function loadRoutineData(forceRefresh = false) {
     const container = document.getElementById('routine-timeline-container');
     if (!container || !window.location.pathname.includes('/routine')) return;
     try {
         container.innerHTML = `<div class="p-20 text-center animate-pulse italic text-primary">Accessing Persistent Vault...</div>`;
-        const data = await getSchedule(forceRefresh);
-        if (!data || !data.schedule) {
+        const [data, activitiesRes, summaryRes] = await Promise.all([
+            getSchedule(forceRefresh),
+            authenticatedFetch(`${API_BASE}/activities/today`).catch(() => null),
+            authenticatedFetch(`${API_BASE}/dashboard/summary`).catch(() => null)
+        ]);
+
+        const summary = (summaryRes && summaryRes.ok) ? await summaryRes.json() : {};
+        const activitiesData = (activitiesRes && activitiesRes.ok) ? await activitiesRes.json() : {};
+        const activitiesList = activitiesData.activities || summary.activities || [];
+
+        // Build mapping of activity status by lowercase practice name
+        const activityStatusMap = new Map();
+        activitiesList.forEach(a => {
+            if (a.practice_name) {
+                activityStatusMap.set(a.practice_name.toLowerCase().trim(), a.status || 'scheduled');
+            }
+        });
+        (summary.completions_today || []).forEach(p => {
+            if (!activityStatusMap.has(p.toLowerCase().trim())) {
+                activityStatusMap.set(p.toLowerCase().trim(), 'completed_by_user');
+            }
+        });
+
+        const scheduleObj = (data && data.schedule && (data.schedule.morning_block || data.schedule.midday_block || data.schedule.evening_block))
+            ? data.schedule
+            : (data && (data.morning_block || data.midday_block || data.evening_block))
+                ? data
+                : (data && data.schedule && data.schedule.schedule)
+                    ? data.schedule.schedule
+                    : (data && data.schedule) ? data.schedule : null;
+
+        if (!scheduleObj) {
             container.innerHTML = `
                 <div class="p-12 text-center glass-card bg-surface-container-low/40 border border-error/20 rounded-[2rem] shadow-lg max-w-xl mx-auto my-8">
                     <span class="material-symbols-outlined text-4xl text-error mb-2">sync_problem</span>
@@ -1182,9 +1542,27 @@ async function loadRoutineData(forceRefresh = false) {
                 </div>`;
             return;
         }
+
+        const blocks = ['morning_block', 'midday_block', 'evening_block'];
+        let totalTasks = 0;
+        blocks.forEach(b => {
+            if (Array.isArray(scheduleObj[b])) totalTasks += scheduleObj[b].length;
+        });
+
+        if (totalTasks === 0) {
+            container.innerHTML = `
+                <div class="p-12 text-center glass-card bg-surface-container-low/40 border border-outline-variant/20 rounded-[2rem] shadow-lg max-w-xl mx-auto my-8">
+                    <span class="material-symbols-outlined text-4xl text-secondary mb-2">event_available</span>
+                    <h4 class="font-headline-sm text-on-surface mb-2">No Practices Scheduled for Today</h4>
+                    <p class="text-sm opacity-70 mb-6">Your daily routine vault is clear. Ask Vaidya AI in chat to recommend practices or compile a personalized Ayurvedic Dinacharya.</p>
+                    <a href="/chat" class="inline-block px-6 py-3 bg-primary text-on-primary rounded-xl font-bold shadow-md hover:scale-[1.02] active:scale-95 transition-all">Consult Vaidya AI</a>
+                </div>`;
+            return;
+        }
+
         container.innerHTML = '<div class="hidden sm:block absolute left-[120px] top-8 bottom-8 w-[2px] bg-outline-variant/20"></div>';
-        ['morning_block', 'midday_block', 'evening_block'].forEach(blockKey => {
-            const tasks = data.schedule[blockKey] || [];
+        blocks.forEach(blockKey => {
+            const tasks = scheduleObj[blockKey] || [];
             if (tasks.length === 0) return;
             const section = document.createElement('div');
             section.className = 'relative z-10 mb-12 flex flex-col sm:flex-row gap-8';
@@ -1194,24 +1572,110 @@ async function loadRoutineData(forceRefresh = false) {
                 const taskSlot = task.time_slot || task.time || 'Flexible';
                 const taskRationale = task.rationale || task.description || 'Ayurvedic daily practice.';
                 const taskDesc = task.description || '';
+                const rawStatus = activityStatusMap.get(taskName.toLowerCase().trim()) || 'scheduled';
+                const isCompleted = ['completed_by_user', 'auto_completed_evidence', 'completed'].includes(rawStatus);
+                const isSkipped = rawStatus === 'skipped';
+                const isCompensated = rawStatus === 'compensation_scheduled';
+
+                let statusBadge = '';
+                let btnHtml = '';
+
+                const safeJsTaskName = escapeHtml(taskName).replace(/'/g, "\\'");
+
+                const isUpcoming = !isCompleted && isSlotUpcoming(taskSlot, 15);
+
+                if (isCompleted) {
+                    statusBadge = `<span class="px-2 py-0.5 rounded-full bg-emerald-100 text-emerald-800 text-xs font-semibold flex items-center gap-1"><span class="material-symbols-outlined text-[13px]">check_circle</span>Completed</span>`;
+                    btnHtml = `<button class="w-full mt-6 py-3 bg-secondary-container text-on-secondary-container rounded-2xl font-bold cursor-default opacity-85 flex items-center justify-center gap-2" disabled><span class="material-symbols-outlined text-lg">check_circle</span>Completed Today</button>`;
+                } else if (isSkipped) {
+                    statusBadge = `<span class="px-2 py-0.5 rounded-full bg-amber-100 text-amber-800 text-xs font-semibold flex items-center gap-1"><span class="material-symbols-outlined text-[13px]">block</span>Skipped</span>`;
+                    btnHtml = `<button class="w-full mt-6 py-3 bg-primary text-on-primary rounded-2xl font-bold hover:brightness-110 active:scale-95 transition-all shadow-md" onclick="event.stopPropagation(); completeRoutineTask('${safeJsTaskName}')">Resume Practice</button>`;
+                } else if (isCompensated) {
+                    statusBadge = `<span class="px-2 py-0.5 rounded-full bg-blue-100 text-blue-800 text-xs font-semibold flex items-center gap-1"><span class="material-symbols-outlined text-[13px]">update</span>Rescheduled</span>`;
+                    btnHtml = `<button class="w-full mt-6 py-3 bg-primary text-on-primary rounded-2xl font-bold hover:brightness-110 active:scale-95 transition-all shadow-md" onclick="event.stopPropagation(); completeRoutineTask('${safeJsTaskName}')">Mark Complete</button>`;
+                } else if (isUpcoming) {
+                    const slotStart = taskSlot.split(' - ')[0] || taskSlot;
+                    statusBadge = `<span class="px-2 py-0.5 rounded-full bg-surface-variant/80 text-outline text-xs font-medium flex items-center gap-1"><span class="material-symbols-outlined text-[13px]">schedule</span>Upcoming</span>`;
+                    btnHtml = `<button class="w-full mt-6 py-3 bg-surface-container-high/60 text-outline rounded-2xl font-semibold cursor-not-allowed opacity-75 flex items-center justify-center gap-2" disabled title="Scheduled for ${escapeHtml(taskSlot)}"><span class="material-symbols-outlined text-lg">lock_clock</span>Upcoming (Starts ${escapeHtml(slotStart)})</button>`;
+                } else {
+                    statusBadge = `<span class="px-2 py-0.5 rounded-full bg-surface-variant text-on-surface text-xs font-medium">Pending</span>`;
+                    btnHtml = `<button class="w-full mt-6 py-3 bg-primary text-on-primary rounded-2xl font-bold hover:brightness-110 active:scale-95 transition-all shadow-md" onclick="event.stopPropagation(); completeRoutineTask('${safeJsTaskName}')">Mark Complete</button>`;
+                }
+
                 tasksHtml += `
-                    <div class="timeline-card bg-white p-6 rounded-[2rem] border border-outline-variant/10 shadow-sm cursor-pointer mb-4" onclick="this.classList.toggle('expanded')">
+                    <div class="timeline-card bg-white p-6 rounded-[2rem] border border-outline-variant/10 shadow-sm cursor-pointer mb-4 ${isCompleted ? 'border-primary/20 bg-surface-container-low/30 opacity-90' : ''}" onclick="this.classList.toggle('expanded')">
                         <div class="flex justify-between items-center">
                             <div class="flex items-center gap-4">
-                                <div class="w-12 h-12 rounded-2xl bg-primary/5 text-primary flex items-center justify-center"><span class="material-symbols-outlined">self_improvement</span></div>
-                                <div><p class="font-bold text-lg">${taskName}</p><p class="text-sm opacity-60">${taskSlot}</p></div>
+                                <div class="w-12 h-12 rounded-2xl ${isCompleted ? 'bg-primary text-white' : 'bg-primary/5 text-primary'} flex items-center justify-center">
+                                    <span class="material-symbols-outlined">${isCompleted ? 'check_circle' : 'self_improvement'}</span>
+                                </div>
+                                <div>
+                                    <div class="flex items-center gap-2">
+                                        <p class="font-bold text-lg ${isCompleted ? 'line-through text-outline' : ''}">${escapeHtml(taskName)}</p>
+                                        ${statusBadge}
+                                    </div>
+                                    <p class="text-sm opacity-60">${escapeHtml(taskSlot)}</p>
+                                </div>
                             </div>
                             <span class="material-symbols-outlined expand-icon">expand_more</span>
                         </div>
-                        <div class="timeline-card-content"><p class="text-on-surface-variant mb-4">${taskDesc}</p><div class="bg-surface-container-low p-4 rounded-2xl italic text-sm text-primary">"${taskRationale}"</div>
-                        <button class="w-full mt-6 py-3 bg-primary text-on-primary rounded-2xl font-bold" onclick="event.stopPropagation(); authenticatedFetch('${API_BASE}/adherence/log', { method: 'POST', body: JSON.stringify({ user_id: 'current', completed_practices: ['${taskName}'], recommended_practices: [] }) }).then(() => { sessionStorage.removeItem('schedule_cache'); loadRoutineData(); })">Mark Complete</button></div>
+                        <div class="timeline-card-content">
+                            <p class="text-on-surface-variant mb-4">${escapeHtml(taskDesc)}</p>
+                            <div class="bg-surface-container-low p-4 rounded-2xl italic text-sm text-primary">"${escapeHtml(taskRationale)}"</div>
+                            ${btnHtml}
+                        </div>
                     </div>
                 `;
             });
             section.innerHTML = `<div class="sm:w-[120px] text-right pt-4 font-bold text-primary opacity-40">${blockKey.split('_')[0].toUpperCase()}</div><div class="flex-1">${tasksHtml}</div>`;
             container.appendChild(section);
         });
-    } catch(e) { console.error(e); }
+    } catch(e) { console.error("loadRoutineData error:", e); }
+}
+
+function updateLiveTraceStep(container, evt) {
+    if (!container || !evt) return;
+    if (evt.stage === 'understanding_question') {
+        container.innerHTML = `
+            <div class="flex items-center gap-2 text-primary font-medium">
+                <span class="material-symbols-outlined text-[15px] text-secondary ai-pulse">explore</span>
+                <span>${escapeHtml(evt.message || 'Analyzing question, constitutional context & biometrics...')}</span>
+            </div>
+        `;
+    } else if (evt.stage === 'tool_call_start') {
+        const row = document.createElement('div');
+        row.id = `step-tool-${evt.tool}`;
+        row.className = 'flex items-center gap-2 text-on-surface-variant pl-2 py-0.5 animate-pulse';
+        row.innerHTML = `
+            <span class="text-secondary font-bold">▸</span>
+            <span class="font-bold text-primary">${escapeHtml(evt.friendly_name || evt.tool)}</span>
+            <span class="text-[10px] text-gray-400 font-mono">(calling...)</span>
+        `;
+        container.appendChild(row);
+    } else if (evt.stage === 'tool_call_complete') {
+        let row = document.getElementById(`step-tool-${evt.tool}`);
+        if (!row) {
+            row = document.createElement('div');
+            container.appendChild(row);
+        }
+        row.className = 'flex items-center justify-between pl-4 py-0.5 text-[11px]';
+        const isErr = evt.status === 'error';
+        const color = isErr ? 'text-error' : 'text-secondary';
+        const icon = isErr ? '✗' : '✓';
+        const dur = evt.duration_ms ? `${evt.duration_ms}ms` : '';
+        row.innerHTML = `
+            <span class="${color}"><strong>${icon}</strong> ${escapeHtml(evt.summary || 'Completed')}</span>
+            <span class="opacity-60 text-[10px] font-mono">${dur}</span>
+        `;
+    } else if (evt.stage === 'preparing_response') {
+        const row = document.createElement('div');
+        row.className = 'flex items-center gap-2 text-primary font-semibold pt-1 border-t border-outline-variant/10 mt-1';
+        row.innerHTML = `
+            <span class="text-secondary text-sm">✦</span>
+            <span>${escapeHtml(evt.message || 'Synthesizing recommendations...')}</span>
+        `;
+        container.appendChild(row);
+    }
 }
 
 async function loadInsightsData() {
@@ -1238,14 +1702,134 @@ async function loadInsightsData() {
                 if (!msg) return;
                 await renderChatMessage(chatHistory, 'user', msg);
                 input.value = '';
-                const indicator = createTypingIndicator();
-                chatHistory.appendChild(indicator);
+
+                // Create stable, permanent assistant message container that is never deleted
+                const assistantMsgId = 'assistant-msg-' + Date.now();
+                const assistantDiv = document.createElement('div');
+                assistantDiv.id = assistantMsgId;
+                assistantDiv.className = 'flex gap-4 max-w-3xl message-entrance mb-8 w-full';
+                assistantDiv.innerHTML = `
+                    <div class="w-10 h-10 rounded-xl bg-primary flex items-center justify-center flex-shrink-0 shadow-md">
+                        <span class="material-symbols-outlined text-on-primary text-[22px] ai-pulse">psychology_alt</span>
+                    </div>
+                    <div class="bg-white p-5 rounded-[1.5rem] rounded-tl-none shadow-md border border-outline-variant/20 flex-1 min-w-0">
+                        <div class="flex items-center justify-between mb-2 pb-2 border-b border-outline-variant/10">
+                            <div class="flex items-center gap-2">
+                                <span class="w-2.5 h-2.5 rounded-full bg-secondary ai-pulse" id="status-dot-${assistantMsgId}"></span>
+                                <span class="text-xs font-bold uppercase tracking-wider text-primary" id="status-title-${assistantMsgId}">Vaidya Reasoning Engine Active</span>
+                            </div>
+                            <div class="flex items-center gap-1" id="typing-dots-${assistantMsgId}">
+                                <div class="typing-dot"></div><div class="typing-dot"></div><div class="typing-dot"></div>
+                            </div>
+                        </div>
+                        <div id="live-trace-${assistantMsgId}" class="space-y-1.5 text-xs font-mono text-on-surface-variant">
+                            <div class="flex items-center gap-2 text-primary font-medium">
+                                <span class="material-symbols-outlined text-[15px] text-secondary">explore</span>
+                                <span>Analyzing clinical query, constitutional baseline & biometrics...</span>
+                            </div>
+                        </div>
+                        <div id="response-content-${assistantMsgId}" class="mt-4 pt-3 border-t border-outline-variant/10 text-on-surface leading-relaxed hidden"></div>
+                    </div>
+                `;
+                chatHistory.appendChild(assistantDiv);
                 chatHistory.scrollTop = chatHistory.scrollHeight;
-                const chatRes = await authenticatedFetch(`${API_BASE}/chat`, { method: 'POST', body: JSON.stringify({ message: msg }) }, 50000);
-                indicator.remove();
-                if (chatRes && chatRes.ok) {
-                    const chatData = await chatRes.json();
-                    await typeMessage(chatHistory, chatData.response);
+
+                const liveTraceSteps = document.getElementById('live-trace-' + assistantMsgId);
+                const dotsEl = document.getElementById('typing-dots-' + assistantMsgId);
+                const statusDot = document.getElementById('status-dot-' + assistantMsgId);
+                const statusTitle = document.getElementById('status-title-' + assistantMsgId);
+                const responseContent = document.getElementById('response-content-' + assistantMsgId);
+
+                let chatData = null;
+
+                try {
+                    const token = getToken();
+                    const streamRes = await fetch(`${API_BASE}/chat/stream`, {
+                        method: 'POST',
+                        headers: {
+                            'Content-Type': 'application/json',
+                            'Authorization': `Bearer ${token}`
+                        },
+                        body: JSON.stringify({ message: msg })
+                    });
+
+                    if (streamRes.ok && streamRes.body) {
+                        const reader = streamRes.body.getReader();
+                        const decoder = new TextDecoder();
+                        let buffer = '';
+
+                        while (true) {
+                            const { value, done } = await reader.read();
+                            if (done) break;
+                            buffer += decoder.decode(value, { stream: true });
+                            const lines = buffer.split('\n');
+                            buffer = lines.pop();
+
+                            for (const line of lines) {
+                                if (line.startsWith('data: ')) {
+                                    const jsonStr = line.slice(6).trim();
+                                    if (!jsonStr) continue;
+                                    try {
+                                        const event = JSON.parse(jsonStr);
+                                        if (event.type === 'trace' && liveTraceSteps) {
+                                            updateLiveTraceStep(liveTraceSteps, event);
+                                            chatHistory.scrollTop = chatHistory.scrollHeight;
+                                        } else if (event.type === 'final_response') {
+                                            chatData = event;
+                                        } else if (event.type === 'error') {
+                                            chatData = { response: event.response || event.message };
+                                        }
+                                    } catch(pErr) {}
+                                }
+                            }
+                        }
+                    }
+                } catch(streamErr) {
+                    console.warn("SSE stream interrupted:", streamErr);
+                }
+
+                // If stream disconnected before final_response, reconcile against backend database history
+                if (!chatData || !chatData.response) {
+                    try {
+                        const histRes = await authenticatedFetch(`${API_BASE}/chat/history?limit=3`);
+                        if (histRes && histRes.ok) {
+                            const histData = await histRes.json();
+                            if (histData.history && histData.history.length > 0) {
+                                const lastMsg = histData.history[histData.history.length - 1];
+                                if (lastMsg.role === 'assistant' && lastMsg.content) {
+                                    chatData = { response: lastMsg.content, message_id: lastMsg.id };
+                                }
+                            }
+                        }
+                    } catch(hErr) {
+                        console.warn("History reconciliation error:", hErr);
+                    }
+                }
+
+                // Fallback to standard /api/chat only if database reconciliation did not yield a response
+                if (!chatData || !chatData.response) {
+                    try {
+                        const chatRes = await authenticatedFetch(`${API_BASE}/chat`, { method: 'POST', body: JSON.stringify({ message: msg }) }, 30000);
+                        if (chatRes && chatRes.ok) {
+                            chatData = await chatRes.json();
+                        }
+                    } catch(cErr) {
+                        console.error("Fallback /api/chat error:", cErr);
+                    }
+                }
+
+                // Stop loading indicator on all terminal outcomes
+                if (dotsEl) dotsEl.remove();
+                if (statusDot) statusDot.classList.remove('ai-pulse');
+
+                if (chatData && chatData.response) {
+                    if (statusTitle) statusTitle.textContent = 'Vaidya AI • Clinical Guidance';
+                    if (responseContent) {
+                        responseContent.classList.remove('hidden');
+                        responseContent.innerHTML = formatAIText(chatData.response);
+                    }
+                    chatHistory.scrollTop = chatHistory.scrollHeight;
+
                     if (chatData.schedule_updated && chatData.proposed_schedule) {
                         latestScheduleVersion++;
                         sessionStorage.removeItem('schedule_cache');
@@ -1266,13 +1850,36 @@ async function loadInsightsData() {
                         }
                     }
                 } else {
-                    await typeMessage(chatHistory, "### Service Notice\n\nNamaste. I am currently experiencing network latency connecting to the reasoning cluster. Your routine remains safe and preserved. Please try again shortly. 🙏");
+                    if (statusTitle) statusTitle.textContent = 'Notice • Connection Interrupted';
+                    if (responseContent) {
+                        responseContent.classList.remove('hidden');
+                        responseContent.innerHTML = `
+                            <div class="p-3 bg-error/10 border border-error/20 rounded-xl text-error text-xs">
+                                <p class="font-bold">Reasoning Cluster Unreachable</p>
+                                <p class="mt-1">I was unable to complete the response due to a momentary network delay. Your routine and biometric baseline remain safe.</p>
+                                <button type="button" onclick="window.retryChatMessage('${escapeHtml(msg).replace(/'/g, "\\'")}')" class="mt-2.5 px-3 py-1.5 bg-primary text-white text-xs font-semibold rounded-lg hover:bg-primary/90 transition shadow-sm">
+                                    ↻ Retry Message
+                                </button>
+                            </div>
+                        `;
+                    }
                     showToast("Connection timed out. Please retry.");
                 }
             };
         }
     } catch(e) { console.error(e); }
 }
+
+window.retryChatMessage = function(text) {
+    const input = document.getElementById('reasoning-input');
+    const form = document.getElementById('reasoning-chat-form');
+    if (input && form) {
+        input.value = text;
+        form.dispatchEvent(new Event('submit'));
+    }
+};
+
+
 
 function initApp() {
     const isPublic = ['/', '/login', '/register', '/onboarding'].some(p => window.location.pathname === p);
