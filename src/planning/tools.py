@@ -2,7 +2,8 @@ import json
 import logging
 import re
 import time
-from typing import List, Dict, Any, Optional
+from typing import List, Dict, Any, Optional, Tuple
+from datetime import datetime, timedelta
 from src.knowledge.retriever import AyurvedaKnowledgeBase
 from src.models import DoshaProfile, UserContext, DoshaVector, VikritiFlags
 import src.database.db as db
@@ -178,13 +179,16 @@ def get_user_profile(user_id: str) -> Dict[str, Any]:
             telemetry=telemetry,
             symptoms={"self_reported": " ".join(symptoms)} if symptoms else None
         )
+        from src.perception.wearable_interface import WearableTelemetryManager
+        telemetry_summary = WearableTelemetryManager.get_user_telemetry_summary(uid_int)
         return {
             "user_id": user_id,
             "has_completed_onboarding": state.get("has_completed_onboarding", False),
             "adherence_score": state.get("adherence_score", 1.0),
             "prakriti": profile.prakriti.model_dump(),
             "vikriti_flags": profile.vikriti_flags.model_dump(),
-            "symptoms": symptoms
+            "symptoms": symptoms,
+            "telemetry_summary": telemetry_summary
         }
     except Exception as exc:
         logger.error(f"Error fetching profile for user {user_id}: {exc}")
@@ -730,8 +734,137 @@ AVAILABLE_PLANNER_TOOLS: List[Dict[str, Any]] = [
                 "required": ["user_id", "event_type", "message"]
             }
         }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "get_user_telemetry",
+            "description": "Retrieves the user's latest verified wearable biometric readings (heart rate, SpO2, steps, sleep status, stress status, device model, and measurement timestamps) from Android Health Connect.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "user_id": {"type": "string", "description": "The unique ID of the user."}
+                },
+                "required": ["user_id"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "get_user_telemetry_reading",
+            "description": "Retrieves the user's latest verified reading for a specific metric ('heart_rate', 'steps', 'spo2', 'sleep'). Returns exact measurement timestamp, ingestion timestamp, unit, and source provenance. For steps, distinguishes daily cumulative total from latest interval.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "user_id": {"type": "string", "description": "The unique ID of the user."},
+                    "metric_type": {"type": "string", "enum": ["heart_rate", "steps", "spo2", "resting_hr", "sleep"], "description": "The specific metric to query."}
+                },
+                "required": ["user_id", "metric_type"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "get_telemetry_history_range",
+            "description": "Retrieves historical telemetry summaries for a specific metric across a requested time range ('today', 'yesterday', 'last_24h', 'last_7d', 'last_30d', or custom start/end timestamps). For steps, calculates non-overlapping interval totals without inflating cumulative counts.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "user_id": {"type": "string", "description": "The unique ID of the user."},
+                    "metric_type": {"type": "string", "enum": ["heart_rate", "steps", "spo2"], "description": "Metric to analyze."},
+                    "period": {"type": "string", "enum": ["today", "yesterday", "last_24h", "last_7d", "last_30d"], "description": "Preset historical time range."},
+                    "start_time": {"type": "string", "description": "Optional ISO or epoch start time for custom window."},
+                    "end_time": {"type": "string", "description": "Optional ISO or epoch end time for custom window."}
+                },
+                "required": ["user_id", "metric_type"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "compare_telemetry_periods",
+            "description": "Compares biometrics between two time windows (e.g., 'today' vs 'yesterday', or 'last_7d' vs 'previous_7d'). Returns difference, percentage change, and circadian trend direction.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "user_id": {"type": "string", "description": "The unique ID of the user."},
+                    "metric_type": {"type": "string", "enum": ["heart_rate", "steps", "spo2"], "description": "Metric to compare."},
+                    "period_1": {"type": "string", "description": "Primary period (e.g. 'today', 'last_7d')."},
+                    "period_2": {"type": "string", "description": "Comparative baseline period (e.g. 'yesterday', 'previous_7d')."}
+                },
+                "required": ["user_id", "metric_type", "period_1", "period_2"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "get_activity_completion_evidence",
+            "description": "Checks verified smartwatch telemetry evidence for a scheduled daily practice (such as Active Shathapavali ~100 brisk steps). Retrieves interval steps taken strictly during the scheduled activity window.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "user_id": {"type": "string", "description": "The unique ID of the user."},
+                    "practice_name": {"type": "string", "description": "Name of the practice (e.g. 'Active Shathapavali')."},
+                    "schedule_date": {"type": "string", "description": "Optional YYYY-MM-DD date (defaults to today)."}
+                },
+                "required": ["user_id", "practice_name"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "review_schedule_adherence",
+            "description": "Reviews the user's activity lifecycle adherence over recent days, including auto-completed evidence, missed practices, and compensatory activities scheduled.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "user_id": {"type": "string", "description": "The unique ID of the user."},
+                    "days": {"type": "integer", "description": "Number of days of history to review (default: 7)."}
+                },
+                "required": ["user_id"]
+            }
+        }
     }
 ]
+
+
+def _resolve_period_timestamps(period: Optional[str], start_time: Optional[str] = None, end_time: Optional[str] = None) -> Tuple[float, float]:
+    """Helper to convert human or ISO periods into epoch timestamps."""
+    now = time.time()
+    today_str = datetime.now().strftime("%Y-%m-%d")
+
+    if start_time and end_time:
+        try:
+            s_ts = float(start_time) if start_time.replace('.', '', 1).isdigit() else datetime.fromisoformat(start_time).timestamp()
+            e_ts = float(end_time) if end_time.replace('.', '', 1).isdigit() else datetime.fromisoformat(end_time).timestamp()
+            return s_ts, e_ts
+        except Exception:
+            pass
+
+    if period == "today":
+        dt_start = datetime.strptime(f"{today_str} 00:00:00", "%Y-%m-%d %H:%M:%S")
+        return dt_start.timestamp(), now
+    elif period == "yesterday":
+        yest_str = (datetime.now() - timedelta(days=1)).strftime("%Y-%m-%d")
+        dt_start = datetime.strptime(f"{yest_str} 00:00:00", "%Y-%m-%d %H:%M:%S")
+        dt_end = datetime.strptime(f"{yest_str} 23:59:59", "%Y-%m-%d %H:%M:%S")
+        return dt_start.timestamp(), dt_end.timestamp()
+    elif period == "last_24h":
+        return now - 86400.0, now
+    elif period == "last_7d":
+        return now - (7 * 86400.0), now
+    elif period == "previous_7d":
+        return now - (14 * 86400.0), now - (7 * 86400.0)
+    elif period == "last_30d":
+        return now - (30 * 86400.0), now
+    else:
+        # Default to last 24 hours
+        return now - 86400.0, now
 
 
 def execute_planner_tool(tool_name: str, args: Dict[str, Any], caller_user_id: Optional[str] = None) -> str:
@@ -749,6 +882,7 @@ def execute_planner_tool(tool_name: str, args: Dict[str, Any], caller_user_id: O
                 return json.dumps({"error": f"Permission denied: user_id '{args['user_id']}' mismatch with authenticated context '{caller_user_id}'."})
 
         effective_user_id = str(caller_user_id or args.get("user_id") or "1")
+        u_id_int = int(effective_user_id)
 
         if tool_name == "get_user_profile":
             profile_data = get_user_profile(effective_user_id)
@@ -821,6 +955,144 @@ def execute_planner_tool(tool_name: str, args: Dict[str, Any], caller_user_id: O
                 idempotency_key=f"tool-{effective_user_id}-{args.get('event_type')}-{args.get('activity_name')}-{time.strftime('%Y%m%d%H%M')}"
             )
             return json.dumps(res)
+
+        elif tool_name == "get_user_telemetry":
+            from src.perception.wearable_interface import WearableTelemetryManager
+            telemetry_data = WearableTelemetryManager.get_user_telemetry_summary(u_id_int)
+            return json.dumps(telemetry_data)
+
+        elif tool_name == "get_user_telemetry_reading":
+            from src.perception.wearable_interface import WearableTelemetryManager
+            m_type = args.get("metric_type", "heart_rate")
+            summary = WearableTelemetryManager.get_user_telemetry_summary(u_id_int)
+            metric_entry = summary.get("metrics", {}).get(m_type, {})
+            result = {
+                "user_id": u_id_int,
+                "metric_type": m_type,
+                "reading": metric_entry,
+                "device_model": summary.get("device_model", "Fastrack Noir Charm"),
+                "source_package": summary.get("source_package", "com.fastrack.smartworld"),
+                "last_sync_timestamp": summary.get("last_ingested_at"),
+                "is_upstream_stale": summary.get("is_upstream_stale", False)
+            }
+            if m_type == "steps":
+                result["daily_total_steps"] = db.get_daily_steps(u_id_int)
+                result["latest_interval_steps"] = metric_entry.get("latest_interval")
+            elif m_type == "sleep":
+                result["sleep_hours"] = metric_entry.get("value")
+                result["sleep_status"] = metric_entry.get("status")
+            return json.dumps(result)
+
+        elif tool_name == "get_telemetry_history_range":
+            m_type = args.get("metric_type", "steps")
+            s_ts, e_ts = _resolve_period_timestamps(args.get("period"), args.get("start_time"), args.get("end_time"))
+            summary = db.get_telemetry_window_summary(u_id_int, m_type, s_ts, e_ts)
+            summary["period_label"] = args.get("period", "custom")
+            summary["start_iso"] = datetime.fromtimestamp(s_ts).strftime("%Y-%m-%d %H:%M:%S")
+            summary["end_iso"] = datetime.fromtimestamp(e_ts).strftime("%Y-%m-%d %H:%M:%S")
+            return json.dumps(summary)
+
+        elif tool_name == "compare_telemetry_periods":
+            m_type = args.get("metric_type", "steps")
+            p1_start, p1_end = _resolve_period_timestamps(args.get("period_1"))
+            p2_start, p2_end = _resolve_period_timestamps(args.get("period_2"))
+
+            w1 = db.get_telemetry_window_summary(u_id_int, m_type, p1_start, p1_end)
+            w2 = db.get_telemetry_window_summary(u_id_int, m_type, p2_start, p2_end)
+
+            if m_type == "steps":
+                val1 = w1.get("total_steps", 0)
+                val2 = w2.get("total_steps", 0)
+            else:
+                val1 = w1.get("avg") or 0.0
+                val2 = w2.get("avg") or 0.0
+
+            diff = val1 - val2
+            pct_change = round((diff / val2 * 100.0), 1) if val2 > 0 else 0.0
+            direction = "increased" if diff > 0 else ("decreased" if diff < 0 else "unchanged")
+
+            return json.dumps({
+                "metric_type": m_type,
+                "period_1": {"name": args.get("period_1"), "value": val1, "records_count": w1.get("count")},
+                "period_2": {"name": args.get("period_2"), "value": val2, "records_count": w2.get("count")},
+                "absolute_difference": round(diff, 1),
+                "percent_change": pct_change,
+                "trend_direction": direction
+            })
+
+        elif tool_name == "get_activity_completion_evidence":
+            p_name = args.get("practice_name", "")
+            d_str = args.get("schedule_date") or datetime.now().strftime("%Y-%m-%d")
+
+            # Check activity_lifecycle
+            activities = db.get_user_activities(u_id_int, date_str=d_str)
+            matching = [a for a in activities if p_name.lower() in a["practice_name"].lower()]
+
+            if not matching:
+                return json.dumps({
+                    "status": "not_scheduled",
+                    "practice_name": p_name,
+                    "date": d_str,
+                    "message": f"'{p_name}' was not found in the scheduled routine for {d_str}."
+                })
+
+            act = matching[0]
+            start_ts = act["start_time_ts"]
+            end_ts = act["end_time_ts"]
+
+            # Query interval steps strictly during scheduled activity window
+            interval_steps = db.get_interval_steps(u_id_int, start_ts, end_ts)
+
+            # Auto-completion rule for Active Shathapavali (~100 brisk steps)
+            is_shathapavali = "shathapavali" in p_name.lower() or "walk" in p_name.lower()
+            threshold_met = interval_steps >= 100 if is_shathapavali else False
+
+            evidence_result = {
+                "activity_id": act["id"],
+                "practice_name": act["practice_name"],
+                "time_slot": act["time_slot"],
+                "status": act["status"],
+                "interval_steps_measured": interval_steps,
+                "threshold_required": 100 if is_shathapavali else None,
+                "is_evidence_sufficient": threshold_met,
+                "completion_source": act.get("completion_source"),
+                "completed_at": act.get("completed_at")
+            }
+            return json.dumps(evidence_result)
+
+        elif tool_name == "review_schedule_adherence":
+            days = int(args.get("days", 7))
+            activities = []
+            for i in range(days):
+                day_str = (datetime.now() - timedelta(days=i)).strftime("%Y-%m-%d")
+                activities.extend(db.get_user_activities(u_id_int, date_str=day_str))
+
+            completed_user = len([a for a in activities if a["status"] == "completed_by_user"])
+            auto_completed = len([a for a in activities if a["status"] == "auto_completed_evidence"])
+            missed = len([a for a in activities if a["status"] == "missed"])
+            compensated = len([a for a in activities if a["status"] in ("compensation_scheduled", "compensation_completed")])
+            total = len(activities)
+
+            from src.behavior.scoring import ScoringEngine
+            completed_eligible = completed_user + auto_completed + compensated
+            adh_res = ScoringEngine.calculate_adherence_score(completed_eligible, total)
+            rate = adh_res["score"]
+
+            return json.dumps({
+                "user_id": u_id_int,
+                "history_days": days,
+                "total_scheduled_activities": total,
+                "completed_manually": completed_user,
+                "auto_completed_wearable_evidence": auto_completed,
+                "missed_activities": missed,
+                "compensations_scheduled": compensated,
+                "adherence_percentage": rate,
+                "scoring_formula": adh_res["formula"],
+                "missed_activity_items": [
+                    {"id": a["id"], "name": a["practice_name"], "date": a["schedule_date"], "slot": a["time_slot"]}
+                    for a in activities if a["status"] == "missed"
+                ][:5]
+            })
 
         else:
             return json.dumps({"error": f"Unknown tool '{tool_name}'"})
