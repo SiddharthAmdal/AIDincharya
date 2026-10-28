@@ -14,13 +14,12 @@ class AdherenceTracker:
     @staticmethod
     def calculate_adherence_score(completed_count: int, recommended_count: int) -> float:
         """
-        Computes basic static Adherence Score (S_adj) as ratio of completed to recommended tasks.
+        Computes Adherence Score (S_adj) as ratio of completed to recommended eligible tasks.
         Returns a bounded float between 0.0 and 1.0.
         """
-        if recommended_count <= 0:
-            return 1.0
-        score = completed_count / recommended_count
-        return round(min(max(score, 0.0), 1.0), 2)
+        from src.behavior.scoring import ScoringEngine
+        res = ScoringEngine.calculate_adherence_score(completed_count, recommended_count)
+        return round(res["score"] / 100.0, 2)
 
     @staticmethod
     def calculate_time_decay_adherence(
