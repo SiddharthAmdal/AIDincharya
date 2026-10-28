@@ -285,152 +285,17 @@
 <div class="mb-12 md:mb-16">
 <div class="flex items-center gap-2 mb-4">
 <span class="px-3 py-1 rounded-full bg-secondary-container text-on-secondary-container font-label-sm text-label-sm">Today</span>
-<span class="text-on-surface-variant font-label-sm text-label-sm">Wednesday, Oct 25</span>
+<span class="text-on-surface-variant font-label-sm text-label-sm"><span id="routine-today-date">Today</span></span>
 </div>
 <h2 class="font-display-lg-mobile md:font-display-lg text-display-lg-mobile md:text-display-lg text-on-background mb-4">Your Daily Flow</h2>
-<p class="font-body-lg text-body-lg text-on-surface-variant max-w-2xl">A personalized rhythm designed to ground Vata and soothe Pitta, optimizing your energy throughout the day.</p>
+<p class="font-body-lg text-body-lg text-on-surface-variant max-w-2xl"><span id="routine-dosha-subtitle">A personalized rhythm designed to optimize your doshic balance and circadian energy throughout the day.</span></p>
 </div>
 <!-- Timeline Container -->
 <div id="routine-timeline-container" class="relative max-w-3xl">
-<!-- Vertical Line (Desktop/Tablet) -->
-<div class="hidden sm:block absolute left-[120px] top-8 bottom-8 w-[2px] bg-outline-variant/30 z-0"></div>
-<!-- Timeline Section: Morning -->
-<div class="relative z-10 mb-12 sm:mb-16">
-<div class="flex flex-col sm:flex-row items-start gap-4 sm:gap-12">
-<!-- Time Marker -->
-<div class="sm:w-[100px] flex sm:justify-end items-center sm:items-start pt-2">
-<div class="flex items-center gap-3 sm:flex-col sm:items-end">
-<span class="font-headline-md text-headline-md text-primary">06:00</span>
-<div class="flex items-center gap-2 text-on-surface-variant">
-<span class="material-symbols-outlined text-label-md">wb_twilight</span>
-<span class="font-label-sm text-label-sm uppercase tracking-wider">Morning</span>
-</div>
-</div>
-</div>
-<!-- Cards Container -->
-<div class="flex-1 flex flex-col gap-6 w-full">
-<!-- Card 1: Waking -->
-<div class="timeline-card bg-surface-container-lowest rounded-3xl p-6 shadow-[0_8px_30px_rgb(0,0,0,0.04)] border border-outline-variant/10 cursor-pointer group" onclick="this.classList.toggle('expanded')">
-<div class="flex justify-between items-start gap-4">
-<div class="flex items-start gap-4">
-<div class="w-12 h-12 rounded-2xl bg-surface-container flex items-center justify-center text-primary group-hover:bg-primary-container group-hover:text-on-primary-container transition-colors">
-<span class="material-symbols-outlined">light_mode</span>
-</div>
-<div>
-<h3 class="font-headline-md text-headline-md text-on-surface mb-1">Brahma Muhurta</h3>
-<div class="flex items-center gap-3 text-on-surface-variant font-label-sm text-label-sm">
-<span class="flex items-center gap-1"><span class="material-symbols-outlined text-[16px]">schedule</span> 10m</span>
-<span class="px-2 py-0.5 rounded-full bg-surface-variant text-on-surface">Foundation</span>
-</div>
-</div>
-</div>
-<button class="text-outline hover:text-primary transition-colors p-2 rounded-full hover:bg-surface-container">
-<span class="material-symbols-outlined expand-icon">expand_more</span>
-</button>
-</div>
-<div class="timeline-card-content">
-<div class="pt-4 border-t border-outline-variant/20 mt-4">
-<div class="flex items-start gap-3 bg-surface-container-low p-4 rounded-2xl relative overflow-hidden">
-<div class="absolute inset-0 opacity-10 bg-gradient-to-r from-primary-container to-transparent"></div>
-<span class="material-symbols-outlined text-primary mt-0.5">auto_awesome</span>
-<div>
-<h4 class="font-label-md text-label-md text-primary mb-1">AI Insight</h4>
-<p class="font-body-sm text-body-sm text-on-surface-variant">Waking before sunrise aligns your circadian rhythm with the purest qualities of nature (Sattva), helping to clear morning grogginess often associated with mild Kapha accumulation overnight.</p>
-</div>
-</div>
-<div class="mt-4 flex gap-3">
-<button class="px-4 py-2 bg-primary text-on-primary rounded-full font-label-sm text-label-sm hover:bg-primary-fixed-dim transition-colors shadow-sm">Start Timer</button>
-<button class="px-4 py-2 border border-outline text-on-surface rounded-full font-label-sm text-label-sm hover:bg-surface-container transition-colors">Log Details</button>
-</div>
-</div>
-</div>
-</div>
-<!-- Card 2: Abhyanga -->
-<div class="timeline-card bg-surface-container-lowest rounded-3xl p-6 shadow-[0_8px_30px_rgb(0,0,0,0.04)] border border-outline-variant/10 cursor-pointer group" onclick="this.classList.toggle('expanded')">
-<div class="flex justify-between items-start gap-4">
-<div class="flex items-start gap-4">
-<div class="w-12 h-12 rounded-2xl bg-secondary-container flex items-center justify-center text-on-secondary-container">
-<span class="material-symbols-outlined">water_drop</span>
-</div>
-<div>
-<h3 class="font-headline-md text-headline-md text-on-surface mb-1">Abhyanga</h3>
-<div class="flex items-center gap-3 text-on-surface-variant font-label-sm text-label-sm flex-wrap">
-<span class="flex items-center gap-1"><span class="material-symbols-outlined text-[16px]">schedule</span> 20m</span>
-<span class="px-2 py-0.5 rounded-full bg-surface-variant text-on-surface">Warm Sesame Oil</span>
-<span class="px-2 py-0.5 rounded-full border border-secondary text-secondary">Vata Focus</span>
-</div>
-</div>
-</div>
-<button class="text-outline hover:text-primary transition-colors p-2 rounded-full hover:bg-surface-container">
-<span class="material-symbols-outlined expand-icon">expand_more</span>
-</button>
-</div>
-<div class="timeline-card-content">
-<div class="pt-4 border-t border-outline-variant/20 mt-4">
-<div class="flex items-start gap-3 bg-surface-container-low p-4 rounded-2xl relative overflow-hidden">
-<div class="absolute inset-0 opacity-10 bg-gradient-to-r from-secondary-container to-transparent"></div>
-<span class="material-symbols-outlined text-secondary mt-0.5">psychology</span>
-<div>
-<h4 class="font-label-md text-label-md text-secondary mb-1">Doshic Relevance</h4>
-<p class="font-body-sm text-body-sm text-on-surface-variant">Your sleep data shows elevated restlessness. Warm oil massage is the most direct intervention to pacify Vata, nourishing the nervous system and grounding erratic energy before the day begins.</p>
-</div>
-</div>
-</div>
-</div>
-</div>
-</div>
-</div>
-</div>
-<!-- Timeline Section: Midday -->
-<div class="relative z-10 mb-12 sm:mb-16">
-<div class="flex flex-col sm:flex-row items-start gap-4 sm:gap-12">
-<!-- Time Marker -->
-<div class="sm:w-[100px] flex sm:justify-end items-center sm:items-start pt-2">
-<div class="flex items-center gap-3 sm:flex-col sm:items-end">
-<span class="font-headline-md text-headline-md text-primary">12:30</span>
-<div class="flex items-center gap-2 text-on-surface-variant">
-<span class="material-symbols-outlined text-label-md">sunny</span>
-<span class="font-label-sm text-label-sm uppercase tracking-wider">Midday</span>
-</div>
-</div>
-</div>
-<!-- Cards Container -->
-<div class="flex-1 flex flex-col gap-6 w-full">
-<!-- Card 3: Lunch -->
-<div class="timeline-card bg-surface-container-lowest rounded-3xl p-6 shadow-[0_8px_30px_rgb(0,0,0,0.04)] border border-outline-variant/10 cursor-pointer group" onclick="this.classList.toggle('expanded')">
-<div class="flex justify-between items-start gap-4">
-<div class="flex items-start gap-4">
-<div class="w-12 h-12 rounded-2xl bg-surface-container flex items-center justify-center text-primary group-hover:bg-primary-container group-hover:text-on-primary-container transition-colors">
-<span class="material-symbols-outlined">restaurant</span>
-</div>
-<div>
-<h3 class="font-headline-md text-headline-md text-on-surface mb-1">Main Meal</h3>
-<div class="flex items-center gap-3 text-on-surface-variant font-label-sm text-label-sm">
-<span class="flex items-center gap-1"><span class="material-symbols-outlined text-[16px]">schedule</span> 45m</span>
-<span class="px-2 py-0.5 rounded-full border border-outline text-on-surface-variant">Cooling Foods</span>
-</div>
-</div>
-</div>
-<button class="text-outline hover:text-primary transition-colors p-2 rounded-full hover:bg-surface-container">
-<span class="material-symbols-outlined expand-icon">expand_more</span>
-</button>
-</div>
-<div class="timeline-card-content">
-<div class="pt-4 border-t border-outline-variant/20 mt-4">
-<div class="flex items-start gap-3 bg-surface-container-low p-4 rounded-2xl relative overflow-hidden">
-<div class="absolute inset-0 opacity-5 bg-gradient-to-r from-primary to-transparent"></div>
-<span class="material-symbols-outlined text-primary mt-0.5">science</span>
-<div>
-<h4 class="font-label-md text-label-md text-primary mb-1">Digestive Fire</h4>
-<p class="font-body-sm text-body-sm text-on-surface-variant">Agni (digestive fire) peaks at noon. Consuming your largest meal now ensures optimal assimilation. We recommend incorporating cooling spices like coriander to temper afternoon Pitta spikes.</p>
-</div>
-</div>
-</div>
-</div>
-</div>
-</div>
-</div>
-</div>
+    <div class="p-16 text-center animate-pulse italic text-primary">
+        <span class="material-symbols-outlined text-4xl block mb-3 animate-spin">sync</span>
+        Synchronizing with daily routine vault...
+    </div>
 </div>
 </div>
 <!-- Footer -->

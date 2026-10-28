@@ -4,7 +4,7 @@ from typing import Dict, Any
 from dotenv import load_dotenv
 
 # Load environment variables from .env file
-load_dotenv()
+load_dotenv(override=True)
 
 logger = logging.getLogger("AiDincharyaConfig")
 
@@ -40,7 +40,7 @@ LLM_PROVIDER = os.getenv("LLM_PROVIDER", "nvidia").lower()
 # Default AI Model based on provider
 if LLM_PROVIDER == "nvidia":
     DEFAULT_MODEL = os.getenv("DEFAULT_MODEL", "nvidia/nemotron-3.5-lightning-30b-a3b")
-    FALLBACK_MODEL = os.getenv("FALLBACK_MODEL", "openai/gpt-oss-20b")
+    FALLBACK_MODEL = os.getenv("FALLBACK_MODEL", "nvidia/nemotron-3.5-bolt-e4b")
 elif LLM_PROVIDER == "gemini":
     DEFAULT_MODEL = os.getenv("DEFAULT_MODEL", "gemini-1.5-flash")
     FALLBACK_MODEL = os.getenv("FALLBACK_MODEL", "gemini-2.0-flash")

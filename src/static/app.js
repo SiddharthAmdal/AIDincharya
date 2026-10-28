@@ -14,6 +14,22 @@ function escapeHtml(str) {
 }
 window.escapeHtml = escapeHtml;
 
+// --- Upcoming Time Slot Helper ---
+function isSlotUpcoming(slotStr, bufferMinutes = 15) {
+    if (!slotStr || typeof slotStr !== 'string') return false;
+    const match = slotStr.match(/(\d{1,2}):(\d{2})/);
+    if (!match) return false;
+    const startHour = parseInt(match[1], 10);
+    const startMin = parseInt(match[2], 10);
+    const startTotalMin = startHour * 60 + startMin;
+
+    const now = new Date();
+    const currentTotalMin = now.getHours() * 60 + now.getMinutes();
+
+    return (startTotalMin - currentTotalMin) > bufferMinutes;
+}
+window.isSlotUpcoming = isSlotUpcoming;
+
 
 // --- Global Styles ---
 const style = document.createElement('style');
@@ -486,10 +502,13 @@ async function getSchedule(forceRefresh = false) {
     const currentVersion = ++latestScheduleVersion;
     const now = Date.now();
     const CACHE_DURATION = 10 * 60 * 1000; 
-    const cachedString = sessionStorage.getItem('schedule_cache');
+
+    // Always fetch fresh schedule on routine page or when forceRefresh is requested
+    const isRoutinePage = window.location.pathname.includes('/routine');
+    const cachedString = !isRoutinePage ? sessionStorage.getItem('schedule_cache') : null;
     let cache = null;
     try { if(cachedString) cache = JSON.parse(cachedString); } catch(e) {}
-    if (!forceRefresh && cache && cache.data && (now - cache.timestamp < CACHE_DURATION)) {
+    if (!forceRefresh && !isRoutinePage && cache && cache.data && (now - cache.timestamp < CACHE_DURATION)) {
         const s = cache.data.schedule || cache.data;
         if (s && (s.morning_block || s.midday_block || s.evening_block || (s.schedule && s.schedule.morning_block))) {
             return cache.data;
@@ -1373,20 +1392,6 @@ async function loadDashboardData() {
             });
         }
 
-function isSlotUpcoming(slotStr, bufferMinutes = 15) {
-    if (!slotStr || typeof slotStr !== 'string') return false;
-    const match = slotStr.match(/(\d{1,2}):(\d{2})/);
-    if (!match) return false;
-    const startHour = parseInt(match[1], 10);
-    const startMin = parseInt(match[2], 10);
-    const startTotalMin = startHour * 60 + startMin;
-
-    const now = new Date();
-    const currentTotalMin = now.getHours() * 60 + now.getMinutes();
-
-    return (startTotalMin - currentTotalMin) > bufferMinutes;
-}
-
         // Display up to 4 upcoming tasks
         const displayTasks = allTasks.slice(0, 4);
         displayTasks.forEach(task => {
@@ -1511,6 +1516,29 @@ async function loadRoutineData(forceRefresh = false) {
         const activitiesData = (activitiesRes && activitiesRes.ok) ? await activitiesRes.json() : {};
         const activitiesList = activitiesData.activities || summary.activities || [];
 
+        // Update Today's date and dosha subtitle in routine header if present
+        const routineDateEl = document.getElementById('routine-today-date');
+        if (routineDateEl) {
+            const todayStr = new Date().toLocaleDateString('en-US', { weekday: 'long', month: 'short', day: 'numeric' });
+            routineDateEl.textContent = todayStr;
+        }
+        const routineDoshaEl = document.getElementById('routine-dosha-subtitle');
+        if (routineDoshaEl && summary) {
+            const dProfile = summary.dosha_profile || (data && data.dosha_profile) || {};
+            const flags = dProfile.vikriti_flags || {};
+            if (flags.has_fever) {
+                routineDoshaEl.textContent = "A gentle, therapeutic regimen adapted for Nava Jwara (fever) with deep metabolic rest and zero heavy unctions.";
+            } else if (flags.vata_aggravated && flags.pitta_aggravated) {
+                routineDoshaEl.textContent = "A personalized rhythm designed to ground restless Vata and soothe elevated Pitta warmth throughout your day.";
+            } else if (flags.vata_aggravated) {
+                routineDoshaEl.textContent = "A deeply nourishing, grounding Dinacharya sequence to pacify excess Vata and stabilize your circadian flow.";
+            } else if (flags.pitta_aggravated) {
+                routineDoshaEl.textContent = "A soothing, cooling daily sequence calibrated to moderate digestive fire and reduce Pitta heat.";
+            } else if (flags.kapha_aggravated) {
+                routineDoshaEl.textContent = "An invigorating, active Dinacharya designed to stimulate circulation and clear sluggish Kapha.";
+            }
+        }
+
         // Build mapping of activity status by lowercase practice name
         const activityStatusMap = new Map();
         activitiesList.forEach(a => {
@@ -1524,13 +1552,27 @@ async function loadRoutineData(forceRefresh = false) {
             }
         });
 
-        const scheduleObj = (data && data.schedule && (data.schedule.morning_block || data.schedule.midday_block || data.schedule.evening_block))
-            ? data.schedule
-            : (data && (data.morning_block || data.midday_block || data.evening_block))
-                ? data
-                : (data && data.schedule && data.schedule.schedule)
-                    ? data.schedule.schedule
-                    : (data && data.schedule) ? data.schedule : null;
+        // Robust recursive extractor for schedule blocks
+        let scheduleObj = null;
+        if (data) {
+            if (data.morning_block || data.midday_block || data.evening_block) {
+                scheduleObj = data;
+            } else if (data.schedule) {
+                if (data.schedule.morning_block || data.schedule.midday_block || data.schedule.evening_block) {
+                    scheduleObj = data.schedule;
+                } else if (data.schedule.schedule && (data.schedule.schedule.morning_block || data.schedule.schedule.midday_block || data.schedule.schedule.evening_block)) {
+                    scheduleObj = data.schedule.schedule;
+                }
+            }
+        }
+        if (!scheduleObj && summary && summary.schedule) {
+            const s = summary.schedule;
+            if (s.morning_block || s.midday_block || s.evening_block) {
+                scheduleObj = s;
+            } else if (s.schedule && (s.schedule.morning_block || s.schedule.midday_block || s.schedule.evening_block)) {
+                scheduleObj = s.schedule;
+            }
+        }
 
         if (!scheduleObj) {
             container.innerHTML = `
@@ -1555,7 +1597,7 @@ async function loadRoutineData(forceRefresh = false) {
                     <span class="material-symbols-outlined text-4xl text-secondary mb-2">event_available</span>
                     <h4 class="font-headline-sm text-on-surface mb-2">No Practices Scheduled for Today</h4>
                     <p class="text-sm opacity-70 mb-6">Your daily routine vault is clear. Ask Vaidya AI in chat to recommend practices or compile a personalized Ayurvedic Dinacharya.</p>
-                    <a href="/chat" class="inline-block px-6 py-3 bg-primary text-on-primary rounded-xl font-bold shadow-md hover:scale-[1.02] active:scale-95 transition-all">Consult Vaidya AI</a>
+                    <a href="/reasoning" class="inline-block px-6 py-3 bg-primary text-on-primary rounded-xl font-bold shadow-md hover:scale-[1.02] active:scale-95 transition-all">Consult Vaidya AI</a>
                 </div>`;
             return;
         }
