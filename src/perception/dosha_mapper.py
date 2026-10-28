@@ -84,8 +84,21 @@ class DoshaMapper:
         sorted_doshas = sorted(scores.items(), key=lambda x: x[1], reverse=True)
         primary, primary_score = sorted_doshas[0]
         secondary, secondary_score = sorted_doshas[1]
+        tertiary, tertiary_score = sorted_doshas[2]
 
-        if primary_score >= 0.60:
+        # Transparent raw counts
+        raw_counts = {"vata": 0, "pitta": 0, "kapha": 0}
+        if responses:
+            for val in responses.values():
+                if isinstance(val, str):
+                    v_clean = val.strip().lower()
+                    if v_clean in raw_counts:
+                        raw_counts[v_clean] += 1
+
+        # Handle constitutional types: Tridoshic, Pure, Dual, or Dominant
+        if (primary_score - tertiary_score) <= 0.08:
+            dominant_type = "Tridoshic (Sama Prakriti)"
+        elif primary_score >= 0.60:
             dominant_type = f"Pure {primary.capitalize()}"
         elif (primary_score - secondary_score) <= 0.15:
             dominant_type = f"Dual {primary.capitalize()}-{secondary.capitalize()}"
@@ -98,7 +111,10 @@ class DoshaMapper:
             "constitution_type": dominant_type,
             "primary_dosha": primary.capitalize(),
             "secondary_dosha": secondary.capitalize(),
-            "explanation": f"Based on {len(responses or {})} assessment responses, your baseline constitution is {dominant_type} ({primary.capitalize()} {int(primary_score*100)}%, {secondary.capitalize()} {int(secondary_score*100)}%)."
+            "tertiary_dosha": tertiary.capitalize(),
+            "raw_counts": raw_counts,
+            "explanation": f"Based on {len(responses or {})} assessment responses, your baseline constitution is {dominant_type} ({primary.capitalize()} {int(primary_score*100)}%, {secondary.capitalize()} {int(secondary_score*100)}%, {tertiary.capitalize()} {int(tertiary_score*100)}%).",
+            "disclaimer": "This provisional scoring rubric is derived from classical Ayurvedic principles for educational and daily routine personalization. It is not a clinical or diagnostic medical instrument."
         }
 
     @staticmethod
@@ -161,7 +177,15 @@ class DoshaMapper:
     ) -> DoshaProfile:
         """
         Generates the unified DoshaProfile aggregating Prakriti and Vikriti outputs.
+        Distinguishes missing assessments from completed assessments.
         """
+        if not questionnaire or len(questionnaire) == 0:
+            assessment_status = "unassessed"
+        elif len(questionnaire) >= 24:
+            assessment_status = "completed"
+        else:
+            assessment_status = "provisional"
+
         prakriti = cls.classify_prakriti(questionnaire)
         vikriti_flags = cls.detect_vikriti(telemetry, symptoms)
 
@@ -169,5 +193,7 @@ class DoshaMapper:
             user_id=user_id,
             prakriti=prakriti,
             vikriti_flags=vikriti_flags,
+            assessment_status=assessment_status,
             timestamp=time.time()
         )
+
