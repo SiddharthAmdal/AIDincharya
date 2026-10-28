@@ -17,6 +17,7 @@ class AyurvedaKnowledgeBase:
     _shared_chroma_client = None
     _shared_collection = None
     _ingested_check_done = False
+    _query_cache: Dict[str, Any] = {}
 
     def __init__(self):
         # Determine paths relative to this file
@@ -129,6 +130,10 @@ class AyurvedaKnowledgeBase:
         """
         Executes a semantic search query against ChromaDB and returns attributed guidelines.
         """
+        cache_key = f"{query.strip().lower()}_k{k}"
+        if cache_key in AyurvedaKnowledgeBase._query_cache:
+            return AyurvedaKnowledgeBase._query_cache[cache_key]
+
         print(f"[RAG] Querying ChromaDB with: '{query}'")
         try:
             results = self.collection.query(
@@ -156,6 +161,7 @@ class AyurvedaKnowledgeBase:
                         "applicable_doshas": applicable_doshas if applicable_doshas else ["vata", "pitta", "kapha"],
                         "contraindications": []
                     })
+            AyurvedaKnowledgeBase._query_cache[cache_key] = retrieved_results
             return retrieved_results
         except Exception as e:
             print(f"RAG Retrieval Error: {e}")
